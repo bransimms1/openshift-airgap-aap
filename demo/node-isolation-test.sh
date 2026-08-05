@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
-# Prove every workflow node runs independently, the way AAP executes them on
-# OpenShift.
+# Run the readiness workflow the way Automation Controller runs it on
+# OpenShift: each node a separate process, in its own filesystem, with only
+# workflow artifacts crossing the boundary.
 #
-# demo/smoke-test.yml runs the chain in ONE ansible-playbook process, which is
-# convenient but dishonest: plays share a filesystem and, locally, share
-# nothing else. Automation Controller does the opposite — each node is a
-# separate process in its own pod, and the ONLY thing that crosses the boundary
-# is workflow artifacts (set_stats).
-#
-# This script reproduces that faithfully:
 #   * each node is a separate ansible-playbook invocation
-#   * each node gets a DIFFERENT bundle_workdir_base, so it cannot see any
-#     directory a previous node created
-#   * set_stats output is captured and fed to the next node as extra vars,
-#     which is exactly what Controller does with workflow artifacts
+#   * each gets a different bundle_workdir_base, so it cannot see a directory
+#     another node created
+#   * set_stats output is captured and passed to the next node as extra vars
+#
+# A node that depends on a sibling's files fails here and passes smoke-test.yml.
 #
 # Usage:
 #   demo/node-isolation-test.sh passing
@@ -28,14 +23,8 @@ WORK="$(mktemp -d)"
 ART="${WORK}/artifacts.json"
 echo '{}' > "${ART}"
 
-# A purpose-built config for this harness, rather than the repository's.
-#
-# The JSON callback must own stdout completely: the repository's ansible.cfg
-# enables profile_tasks, whose timing lines corrupt the stream this script
-# parses. Disabling it with ANSIBLE_CALLBACKS_ENABLED= works on ansible-core
-# 2.15 and FAILS on 2.19+ with "A non-empty plugin name is required", because an
-# empty value parses as a list containing an empty string. Generating a config
-# that simply never enables the callback avoids the version difference.
+# A purpose-built config rather than the repository's: the JSON callback needs
+# stdout to itself, and the repository's ansible.cfg enables profile_tasks.
 CFG="${WORK}/ansible.cfg"
 cat > "${CFG}" <<EOF
 [defaults]

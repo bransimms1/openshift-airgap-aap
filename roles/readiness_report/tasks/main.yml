@@ -1,10 +1,8 @@
 ---
-# Runs on both the success and failure paths, so nothing here may assume a
-# branch succeeded or that it published anything at all. A failed run must still
-# produce evidence.
+# Runs on both the success and failure paths, so nothing here assumes a branch
+# succeeded or published anything. A failed run still produces evidence.
 #
-# Every input arrives as a workflow artifact. This role reads no file written
-# by another workflow node, because on OpenShift there is no shared filesystem
+# Every input arrives as a workflow artifact: there is no shared filesystem
 # between execution pods.
 #
 # Per-branch states:
@@ -86,8 +84,8 @@
     dest: "{{ report_workdir }}/readiness-report-{{ cluster_name | default('cluster') }}-{{ ansible_date_time.epoch }}.json"
     mode: "0644"
 
-# The published artifact is what survives the pod and what downstream nodes and
-# the change record consume. The rendered files are a convenience.
+# The published artifact is what survives the pod. The rendered files are a
+# convenience - see SECURITY.md on retaining them.
 - name: Publish the summary to the workflow
   ansible.builtin.set_stats:
     data:
@@ -123,7 +121,7 @@
       Evidence written to {{ report_workdir }} and published as the
       readiness_report workflow artifact.
 
-# Published above, failed here: the evidence exists either way.
+# Published above, failed here, so the evidence exists either way.
 - name: Fail the report when the environment is NOT_READY
   ansible.builtin.fail:
     msg: >-

@@ -1,11 +1,9 @@
 ---
-# DEMO FIXTURE — the same zone with one record missing.
+# DEMO FIXTURE - the same zone with api-int missing.
 #
-# api-int is absent. That is the whole scenario: it is the record most often
-# forgotten, because a human testing by hand reaches the cluster through api
-# and never notices. The control plane and the machine-config server use
-# api-int, so the failure surfaces at bootstrap, forty minutes later, as a
-# timeout with no obvious cause.
+# api-int is the record most often forgotten: testing by hand reaches the
+# cluster through api and never queries it. The control plane and the
+# machine-config server both use it, so the failure surfaces at bootstrap.
 #
 # Everything else resolves correctly, which is what makes it realistic —
 # a broken site rarely looks broken.

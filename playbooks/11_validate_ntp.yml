@@ -53,6 +53,6 @@
         msg: >-
           NTP source(s) {{ _ntp.results | rejectattr('rc', 'eq', 0)
           | map(attribute='item') | join(', ') }} did not answer from this
-          subnet. Clock skew fails late: etcd leader elections and certificate
+          subnet. Clock skew surfaces later, in etcd leader elections and certificate
           validation break long after the installer has moved on.
       when: _ntp.results | rejectattr('rc', 'eq', 0) | list | length > 0

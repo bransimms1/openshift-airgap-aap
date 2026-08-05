@@ -1,0 +1,63 @@
+---
+# Fetch and unpack the bundle, then record what it contains.
+#
+# Acquisition is skipped when the working directory is already populated, so on
+# a persistent bastion the second and later workflow nodes are a no-op.
+
+- name: Create this run's working directory
+  ansible.builtin.file:
+    path: "{{ bundle_workdir }}"
+    state: directory
+    mode: "0750"
+
+- name: Check whether this host already has the bundle
+  ansible.builtin.stat:
+    path: "{{ bundle_workdir }}/install-config.yaml"
+  register: _already_present
+
+- name: DEMO - stage the sample bundle from the repository
+  ansible.builtin.copy:
+    src: "{{ demo_bundle_dir }}/"
+    dest: "{{ bundle_workdir }}/"
+    mode: "0640"
+  when:
+    - demo_mode | bool
+    - not _already_present.stat.exists
+
+- name: PRODUCTION - fetch the bundle
+  ansible.builtin.get_url:
+    url: "{{ bundle_url }}"
+    dest: "{{ bundle_workdir }}/bundle.zip"
+    mode: "0640"
+  when:
+    - not (demo_mode | bool)
+    - not _already_present.stat.exists
+
+- name: PRODUCTION - unpack the bundle
+  ansible.builtin.unarchive:
+    src: "{{ bundle_workdir }}/bundle.zip"
+    dest: "{{ bundle_workdir }}"
+    remote_src: true
+  when:
+    - not (demo_mode | bool)
+    - not _already_present.stat.exists
+
+# The readiness report names the exact input it validated. In production that is
+# the archive; in demo mode there is no archive, so it is the install-config.
+- name: Record the digest of the input
+  ansible.builtin.stat:
+    path: "{{ bundle_workdir }}/{{ 'install-config.yaml' if demo_mode | bool else 'bundle.zip' }}"
+    checksum_algorithm: sha256
+  register: _bundle_stat
+
+- name: List what the bundle contains
+  ansible.builtin.find:
+    paths: "{{ bundle_workdir }}"
+    recurse: true
+    file_type: file
+  register: _bundle_files
+
+- name: Build the file list
+  ansible.builtin.set_fact:
+    bundle_contents: >-
+      {{ _bundle_files.files | map(attribute='path') | map('relpath', bundle_workdir) | list }}

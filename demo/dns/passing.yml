@@ -1,10 +1,9 @@
 ---
 # DEMO FIXTURE — the zone as it looks when the site is actually ready.
 #
-# This stands in for a real resolver, so the result does not depend on public
-# DNS or on lab infrastructure being available.
-# Keys are fully-qualified record names; values are lists of A records.
-# A name that is absent from this map resolves as NXDOMAIN.
+# Stands in for a resolver so the result does not depend on lab infrastructure.
+# Keys are fully qualified names, values are lists of A records. A name absent
+# from this map resolves as NXDOMAIN.
 zone:
   api.ocp-demo.lab.example.com:
     - 10.42.10.5

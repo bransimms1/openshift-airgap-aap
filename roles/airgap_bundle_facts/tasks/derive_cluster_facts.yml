@@ -1,0 +1,64 @@
+---
+# Turn the parsed documents into the expectations the readiness branches check.
+
+- name: Derive the facts every readiness check depends on
+  ansible.builtin.set_fact:
+    cluster_name: "{{ ic.metadata.name }}"
+    base_domain: "{{ ic.baseDomain }}"
+    cluster_fqdn: "{{ ic.metadata.name }}.{{ ic.baseDomain }}"
+    api_vips: "{{ ic.platform.baremetal.apiVIPs }}"
+    ingress_vips: "{{ ic.platform.baremetal.ingressVIPs }}"
+    machine_networks: "{{ ic.networking.machineNetwork | map(attribute='cidr') | list }}"
+    trust_bundle: "{{ ic.additionalTrustBundle | default('') }}"
+    ocp_release: "{{ isc.mirror.platform.channels[0].minVersion | default('unknown') }}"
+    ntp_sources: "{{ ac.additionalNTPSources | default([]) if ac is defined else [] }}"
+    rendezvous_ip: "{{ ac.rendezvousIP | default(omit) if ac is defined else omit }}"
+
+# imageDigestSources is the current spelling and imageContentSources the older
+# one; bundles in the field carry either. Mirrors are listed as host/path and
+# only the host is probed.
+- name: Derive the mirror registry hosts
+  ansible.builtin.set_fact:
+    mirror_hosts: >-
+      {{ _sources | map(attribute='mirrors') | flatten
+         | map('split', '/') | map('first') | unique | list }}
+  vars:
+    _sources: "{{ ic.imageDigestSources | default(ic.imageContentSources, true) | default([]) }}"
+
+# api-int is the record most often missing. Testing by hand reaches the cluster
+# through api and never queries api-int, but the control plane and the
+# machine-config server both use it.
+- name: Derive the cluster DNS records that must exist
+  ansible.builtin.set_fact:
+    expected_dns:
+      - name: "api.{{ cluster_fqdn }}"
+        expect: "{{ api_vips }}"
+        why: external API endpoint
+      - name: "api-int.{{ cluster_fqdn }}"
+        expect: "{{ api_vips }}"
+        why: control plane and machine-config server
+      - name: "test.apps.{{ cluster_fqdn }}"
+        expect: "{{ ingress_vips }}"
+        why: wildcard *.apps must resolve to the ingress VIP
+
+- name: Add the record each declared host must have
+  ansible.builtin.set_fact:
+    expected_dns: >-
+      {{ expected_dns + [{'name': item.hostname ~ '.' ~ cluster_fqdn,
+                          'expect': [],
+                          'why': 'node record must resolve'}] }}
+  loop: "{{ ac.hosts | default([]) }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: ac is defined
+
+- name: Derive the host MACs that DHCP reservations must match
+  ansible.builtin.set_fact:
+    expected_macs: >-
+      {{ expected_macs | default([])
+         + [{'host': item.hostname,
+             'macs': item.interfaces | map(attribute='macAddress') | list}] }}
+  loop: "{{ ac.hosts | default([]) }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: ac is defined

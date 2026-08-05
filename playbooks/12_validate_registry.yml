@@ -1,24 +1,22 @@
 ---
 # Validate the mirror registry: reachable, presenting a trust chain the cluster
-# will accept, and actually holding the release payload.
+# will accept, and holding the release payload.
 #
 # Reachability alone is not enough. The chain the registry presents has to match
-# the CA in the bundle's additionalTrustBundle, as seen from this subnet, or
-# every image pull fails with x509 errors after the install completes.
+# the CA in the bundle's additionalTrustBundle, as seen from this subnet, or the
+# cluster fails every image pull with x509 errors after installation.
 - name: Validate mirror registry reachability, trust and content
   hosts: validators
   gather_facts: false
   vars:
     # Used when a mirror host carries no explicit port.
     registry_default_port: 8443
-    # This node's own scratch space. It reads nothing the intake node wrote:
-    # trust_bundle arrives as a workflow artifact and is written out here, in
-    # this pod, immediately before it is used.
+    # This node's own scratch space. trust_bundle arrives as a workflow
+    # artifact and is written out here, in this pod, before it is used.
     registry_workdir: "/tmp/registry-check-{{ awx_job_id | default('local', true) }}"
   tasks:
 
-    # There is no mirror registry in demo mode, and dialling out to a name that
-    # does not resolve would hang the branch.
+    # No mirror registry exists in demo mode.
     - name: DEMO - record the branch as simulated
       when: demo_mode | default(false) | bool
       block:
@@ -48,8 +46,8 @@
         dest: "{{ registry_workdir }}/trust-bundle.pem"
         mode: "0644"
 
-    # mirror_hosts entries come from the bundle as host or host:port. The
-    # certificate read needs the two separately, so split once here.
+    # Bundle entries are host or host:port; the certificate read needs them
+    # separately.
     - name: Split the first mirror host into address and port
       ansible.builtin.set_fact:
         registry_host: "{{ mirror_hosts[0] | split(':') | first }}"
@@ -74,9 +72,9 @@
       register: _cert
       failed_when: false
 
-    # 200 confirms the release repository is there. 401 means the endpoint
-    # exists but the tag list needs credentials, so presence is neither proved
-    # nor disproved - reported as UNCONFIRMED rather than counted as a pass.
+    # 200 confirms the release repository. 401 means the endpoint exists but
+    # the tag list needs credentials, so presence is reported as UNCONFIRMED
+    # rather than counted as a pass.
     - name: Look for the release payload in the mirror
       ansible.builtin.uri:
         url: "https://{{ mirror_hosts[0] }}/v2/openshift/release-images/tags/list"

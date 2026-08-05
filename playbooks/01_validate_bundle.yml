@@ -90,7 +90,8 @@
         that: item.rootDeviceHints is defined
         fail_msg: >-
           {{ item.hostname }} has no rootDeviceHints. RHCOS will pick a device,
-          and on a machine with a RAID volume and local NVMe that is a coin flip.
+          and on a machine with both a RAID volume and local NVMe, the installer
+          has no way to choose.
       loop: "{{ ac.hosts | default([], true) }}"
       loop_control:
         label: "{{ item.hostname }}"
@@ -107,5 +108,5 @@
         that: ntp_sources | length > 0
         fail_msg: >-
           No additionalNTPSources. Clock skew breaks etcd and certificate
-          validation, and it fails late and confusingly.
+          validation and surfaces during bootstrap.
       when: ac is defined

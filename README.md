@@ -63,15 +63,13 @@ consumes what that role publishes through `set_stats`:
                     30 prepare → 31 ISO → 32 boot
 ```
 
-Two properties are load-bearing:
+Two properties shape everything else:
 
 - **Every workflow node runs in its own pod with its own filesystem.** Nodes do
-  not read files written by a sibling; `set_stats` is the handoff. Any node that
-  needs the parsed documents includes `airgap_bundle_facts` and re-derives them
-  from source.
-- **The readiness report fails when the verdict is `NOT_READY`.** That failure is
-  what makes the approval gate unreachable, so execution cannot be approved for
-  an environment that did not pass.
+  not read files a sibling wrote; `set_stats` is the handoff.
+- **The readiness report fails when the verdict is `NOT_READY`.** The approval
+  node hangs off its success edge, so execution cannot be approved for an
+  environment that did not pass.
 
 ## Repository layout
 
@@ -151,56 +149,38 @@ Hub content and is needed only to apply the controller-as-code.
 # Runtime collections - everything imported by playbooks/ and roles/.
 ansible-galaxy collection install -r collections/requirements.yml
 
-# Build the execution environment. Both flags are required:
-#   PYCMD          system dependencies pull in RHEL9's python3.9, which takes
-#                  over /usr/bin/python3 and has no pip; pinning the interpreter
-#                  keeps the build on the 3.12 that does.
-#   --platform     building on Apple silicon otherwise produces an arm64 image
-#                  an x86_64 cluster cannot run. Drop it on x86_64 hosts.
+# Build the execution environment. Both flags are required - see docs/DEMO.md
+# for why. Drop --platform on an x86_64 build host.
 ansible-builder build --container-runtime podman \
   -f execution-environment/execution-environment.yml \
   -t ee-airgap-readiness:1.0 \
   --build-arg PYCMD=/usr/bin/python3.12 \
   --extra-build-cli-args="--platform linux/amd64"
 
-# Applying the controller-as-code needs a separate dependency. ansible.controller
-# is certified content from Automation Hub and is not installed by the line above.
+# ansible.controller is Automation Hub content and is only needed to apply
+# controller/. It is not installed by the line above.
 ansible-galaxy collection install -r controller/requirements.yml
 
-# Run the whole readiness chain locally against the demo fixtures. Each node
-# runs as a separate process carrying artifacts forward, the way Automation
-# Controller executes the workflow.
+# Run the readiness chain locally against the demo fixtures.
 demo/node-isolation-test.sh passing
 ```
 
 ### Running a readiness playbook on its own
 
-The readiness playbooks consume facts published by `00_bundle_intake.yml`
-through `set_stats`. **Workflow artifacts do not cross `ansible-playbook`
-process boundaries**, so running two playbooks as two separate local commands
-does not carry `cluster_fqdn`, `expected_dns` or anything else between them.
-
-Three supported ways to run them:
+The readiness playbooks consume facts that `00_bundle_intake.yml` publishes
+through `set_stats`, and workflow artifacts do not cross `ansible-playbook`
+process boundaries. Two local commands will not pass `cluster_fqdn` or
+`expected_dns` between them.
 
 | Method | Use when |
 |---|---|
-| The `openshift-site-readiness` workflow in Automation Controller | Production. Controller passes artifacts between nodes |
-| `demo/node-isolation-test.sh <scenario>` | Locally, for the full chain. Reproduces Controller's artifact passing |
-| A single `ansible-playbook` run with the required variables supplied | Locally, for one branch |
+| The `openshift-site-readiness` workflow | Production. Controller passes artifacts between nodes |
+| `demo/node-isolation-test.sh <scenario>` | Locally, for the whole chain |
+| One `ansible-playbook` run with the facts supplied as extra vars | Locally, for a single branch |
 
-For the third, supply the facts the branch needs as extra vars. For
-`10_validate_dns`:
-
-```bash
-ansible-playbook -i inventories/site-a/hosts.yml playbooks/10_validate_dns.yml \
-  -e cluster_fqdn=ocp.example.com \
-  -e '{"expected_dns": [{"name": "api.ocp.example.com", "expect": ["10.42.10.5"], "why": "API VIP"}]}' \
-  -e '{"dns_servers": ["10.42.10.53"]}'
-```
-
-`roles/airgap_bundle_facts/tasks/main.yml` lists everything published; the
-readiness branch you are running names what it reads. Alternatively, include the
-role at the top of your own play so the facts are derived in the same process.
+`roles/airgap_bundle_facts/tasks/publish_workflow_facts.yml` lists everything
+published. To work on one branch, include the role at the top of your own play
+so the facts are derived in the same process.
 
 ### In Automation Controller
 

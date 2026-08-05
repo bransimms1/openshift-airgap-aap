@@ -1,0 +1,80 @@
+---
+# Prove the export is complete, is not a draft, and matches the contract the
+# rest of this repository assumes.
+#
+# Everything downstream reads the bundle as ordinary data, which is safe because
+# the assertion at the end of this file establishes the shape first. Adding a
+# new derived fact? Add its field to that assertion too.
+
+- name: Assert the bundle contains what an install needs
+  ansible.builtin.assert:
+    that: item in bundle_contents
+    fail_msg: >-
+      Bundle is missing {{ item }}. This export cannot be used for an
+      installation. Regenerate it from Airgap Architect.
+    success_msg: "{{ item }} present"
+  loop: "{{ bundle_required_files }}"
+
+# Airgap Architect writes this marker when the export had unresolved warnings,
+# so it records that someone was told the configuration was not clean and
+# exported anyway.
+- name: Detect the draft marker
+  ansible.builtin.set_fact:
+    bundle_is_draft: "{{ bundle_draft_marker in bundle_contents }}"
+
+- name: Refuse to proceed on a draft export
+  ansible.builtin.fail:
+    msg: >-
+      {{ bundle_draft_marker }} is present in this bundle. Resolve the warnings
+      in Airgap Architect and re-export, or record an explicit exception and set
+      bundle_fail_on_draft=false.
+  when:
+    - bundle_is_draft | bool
+    - bundle_fail_on_draft | bool
+
+# slurp reads on the host that unpacked the bundle. lookup('file') would read
+# the execution environment's own filesystem instead.
+- name: Read the configuration files off the host that unpacked them
+  ansible.builtin.slurp:
+    src: "{{ bundle_workdir }}/{{ item }}"
+  register: _slurped
+  loop: "{{ bundle_parse_files }}"
+  when: item in bundle_contents
+  loop_control:
+    label: "{{ item }}"
+
+- name: Decode and parse each document
+  ansible.builtin.set_fact:
+    _docs: >-
+      {{ _docs | default({}) | combine({item.item: (item.content | b64decode | from_yaml)}) }}
+  loop: "{{ _slurped.results | selectattr('content', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Bind the parsed documents
+  ansible.builtin.set_fact:
+    ic: "{{ _docs['install-config.yaml'] }}"
+    isc: "{{ _docs['imageset-config.yaml'] }}"
+
+- name: Bind agent-config when present (agent-based installs only)
+  ansible.builtin.set_fact:
+    ac: "{{ _docs['agent-config.yaml'] }}"
+  when: "'agent-config.yaml' in _docs"
+
+- name: Assert the bundle matches the documented contract
+  ansible.builtin.assert:
+    that:
+      - ic.metadata.name | default('') | length > 0
+      - ic.baseDomain | default('') | length > 0
+      - ic.platform.baremetal.apiVIPs | default([]) | length > 0
+      - ic.platform.baremetal.ingressVIPs | default([]) | length > 0
+      - ic.networking.machineNetwork | default([]) | length > 0
+      - isc.apiVersion | default('') is search('v2alpha1')
+    fail_msg: >-
+      This export does not match the documented Airgap Architect contract.
+      install-config.yaml needs metadata.name, baseDomain, a bare-metal platform
+      with apiVIPs and ingressVIPs, and networking.machineNetwork.
+      imageset-config.yaml must be an oc-mirror v2 ImageSetConfiguration
+      (mirror.openshift.io/v2alpha1); v1 emits ImageContentSourcePolicy rather
+      than IDMS/ITMS, which the Day 2 tasks do not apply.
+      Regenerate the export rather than editing it by hand.

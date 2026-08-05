@@ -1,0 +1,39 @@
+---
+# set_stats is how one workflow node hands data to the nodes that follow it.
+# Six validation jobs share this single parse rather than each re-reading the
+# bundle and disagreeing about defaults.
+
+- name: Publish bundle facts to the workflow
+  ansible.builtin.set_stats:
+    data:
+      bundle_sha256: "{{ _bundle_stat.stat.checksum }}"
+      bundle_is_draft: "{{ bundle_is_draft }}"
+      bundle_workdir: "{{ bundle_workdir }}"
+      demo_mode: "{{ demo_mode | bool }}"
+      demo_scenario: "{{ demo_scenario | default('passing') }}"
+      cluster_name: "{{ cluster_name }}"
+      cluster_fqdn: "{{ cluster_fqdn }}"
+      base_domain: "{{ base_domain }}"
+      api_vips: "{{ api_vips }}"
+      ingress_vips: "{{ ingress_vips }}"
+      machine_networks: "{{ machine_networks }}"
+      ntp_sources: "{{ ntp_sources }}"
+      mirror_hosts: "{{ mirror_hosts }}"
+      ocp_release: "{{ ocp_release }}"
+      expected_dns: "{{ expected_dns }}"
+      expected_macs: "{{ expected_macs | default([]) }}"
+
+- name: Show what was derived
+  ansible.builtin.debug:
+    msg: |
+      {{ '*** DEMO MODE - sample bundle from the repository ***' if demo_mode | bool else '' }}
+      Derived from {{ 'install-config' if demo_mode | bool else 'bundle' }} {{ _bundle_stat.stat.checksum[:12] }}
+        working dir   : {{ bundle_workdir }}
+        cluster       : {{ cluster_fqdn }}
+        release       : {{ ocp_release }}
+        api VIP(s)    : {{ api_vips | join(', ') }}
+        ingress VIP(s): {{ ingress_vips | join(', ') }}
+        machine net   : {{ machine_networks | join(', ') }}
+        NTP           : {{ ntp_sources | join(', ') | default('none set', true) }}
+        mirror        : {{ mirror_hosts | join(', ') }}
+      {{ expected_dns | length }} DNS records derived from the bundle.

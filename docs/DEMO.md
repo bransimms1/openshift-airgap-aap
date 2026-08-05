@@ -17,22 +17,10 @@ is powered off, no ISO is generated and no virtual media is attached either way.
 
 ---
 
-## 1. What the workflow does
+## 1. What you will see
 
-```
-Bundle intake  ->  Bundle validation  ->  6 parallel readiness checks
-                                                    |
-                                          Readiness report (always)
-                                                    |
-                                            Approval gate
-                                                    |
-                                      30 prepare -> 31 ISO -> 32 boot
-                                        (all refuse in demo mode)
-```
-
-**Approval depends on the report, not on the validation jobs.** The report node
-fails deliberately when the verdict is `NOT_READY`, so the approval node's success
-edge is never taken. What is approved is the evidence.
+The workflow shape and the approval gate are described in the README. This
+section covers what each branch does when there is nothing real to contact.
 
 Three overall verdicts:
 
@@ -66,52 +54,29 @@ never blocks BMC readiness.
 
 ---
 
-## 2. Required AAP objects
+## 2. Setup
 
-| Object | Name | Notes |
-|---|---|---|
-| Organization | `Platform Engineering` | Any name; must match `controller/*.yml` |
-| Project | `openshift-airgap-aap` | Points at this Git repository, branch `main` |
-| Inventory | `demo` | Source: the project, file `inventories/demo/hosts.yml` |
-| Execution environment | `ee-airgap-readiness` | See §4 — **required** |
-| Job templates | `00-bundle-intake`, `01-validate-bundle`, `10`–`15`, `20-readiness-report`, `30-bmc-prepare-hosts`, `31-generate-agent-iso`, `32-boot-virtual-media` | Created by `controller/job_templates.yml` |
-| Workflow | `openshift-site-readiness` | Created by `controller/workflow_templates.yml` |
+The objects `controller/` expects, and the commands that apply it, are in the
+README under **Controller-as-code prerequisites**. Apply it with
+`-e controller_demo_setup=true`, which is the default.
 
-**No credentials are needed for demo mode.** Everything runs on `localhost` inside
-the execution environment. `controller/job_templates.yml` attaches no credentials
-when `controller_demo_setup: true`, which is the default.
+Demo-specific notes:
 
----
+- **No credentials are needed.** Everything runs on `localhost` inside the
+  execution environment, and `controller/job_templates.yml` attaches no
+  credentials in demo mode.
+- **Inventory `demo`**, sourced from the project, file
+  `inventories/demo/hosts.yml`.
+- Enabling *Update revision on launch* on the project means a fixture change is
+  picked up without a manual sync.
 
-## 3. Setup
-
-1. **Project** — create it pointing at this repository, then sync. Enabling
-   *Update revision on launch* means a fixture change is picked up without a
-   manual sync.
-2. **Inventory** — create `demo`, add a source of type *Sourced from a project*,
-   project `openshift-airgap-aap`, file `inventories/demo/hosts.yml`, then sync.
-3. **Controller-as-code** — apply from a machine with the `ansible.controller`
-   collection and a token:
-
-```bash
-export CONTROLLER_HOST=https://aap.apps.example.com
-export CONTROLLER_TOKEN=...
-
-ansible-playbook controller/job_templates.yml \
-  -e controller_hostname=$CONTROLLER_HOST -e controller_token=$CONTROLLER_TOKEN \
-  -e controller_demo_setup=true
-
-ansible-playbook controller/workflow_templates.yml \
-  -e controller_hostname=$CONTROLLER_HOST -e controller_token=$CONTROLLER_TOKEN \
-  -e controller_demo_setup=true
-```
-
-To create the objects by hand instead, use the names in §2 with inventory `demo`,
-and enable **Prompt on launch** for inventory on each job template.
+To create the objects by hand instead, use the job-template names from
+`controller/job_templates.yml` with inventory `demo`, and enable **Prompt on
+launch** for inventory on each.
 
 ---
 
-## 4. Why a custom execution environment is required
+## 3. Why a custom execution environment is required
 
 Ansible resolves module names at **parse time**, before `when:` is evaluated. The
 registry branch skips immediately in demo mode, but its playbook still references
@@ -157,7 +122,7 @@ Push the image to your registry and register it in AAP as `ee-airgap-readiness`.
 
 ---
 
-## 5. Scenario: `failing_dns`
+## 4. Scenario: `failing_dns`
 
 Launch `openshift-site-readiness` with these survey selections:
 
@@ -208,7 +173,7 @@ record to create.
 
 ---
 
-## 6. Scenario: `passing`
+## 5. Scenario: `passing`
 
 Relaunch and change one field:
 
@@ -240,7 +205,7 @@ and attach it over Redfish. They sit *after* the human decision, not before it.
 
 ---
 
-## 7. Resetting between runs
+## 6. Resetting between runs
 
 There is nothing to reset and nothing to clean up.
 
@@ -254,7 +219,7 @@ To run the failing scenario again, relaunch and select `failing_dns`.
 
 ---
 
-## 8. Running without Automation Controller
+## 7. Running without Automation Controller
 
 Both harnesses run from any machine with `ansible-core` and the collections in
 `collections/requirements.yml`.
@@ -289,11 +254,11 @@ contents.
 
 ---
 
-## 9. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Job fails to parse, "couldn't resolve module" | The execution environment is missing a collection | §4 — it must carry `community.crypto` even though demo mode skips that branch. It does not need `dellemc.openmanage` |
+| Job fails to parse, "couldn't resolve module" | The execution environment is missing a collection | §3 — it must carry `community.crypto` even though demo mode skips that branch. It does not need `dellemc.openmanage` |
 | `01-validate-bundle` fails on `ipaddr` | `netaddr` missing from the execution environment | Rebuild it; `execution-environment/requirements.txt` includes it |
 | Every branch reports SKIPPED in the report | Running the single-process smoke test, or the intake node failed | Use `demo/node-isolation-test.sh`; `set_stats` only flows between workflow nodes |
 | Report says `NOT_READY` and the job is red | Correct behaviour when a branch failed | The gate is meant to be unreachable. Fix the environment and relaunch |
