@@ -36,10 +36,29 @@
         - name: End the play
           ansible.builtin.meta: end_play
 
+    - name: At least one mirror host must be declared
+      ansible.builtin.assert:
+        that: (mirror_hosts | default([])) | length > 0
+        fail_msg: >-
+          mirror_hosts is empty. It is derived from the bundle's
+          imageContentSources, so an empty list means the bundle declares no
+          mirror for the cluster to pull from.
+
     # Parsing and validation live in tasks/mirror_host_parse.yml so the tests
-    # exercise the same expressions. A malformed entry fails here, before any
-    # network module runs, with the value and the accepted forms named.
-    - name: Parse and validate the mirror host
+    # exercise the same expressions. EVERY entry is validated, not just the
+    # first: the /v2/ probe below loops over all of them, so a malformed second
+    # host would otherwise reach the network as a nonsense URL. This runs before
+    # any network module, and names the value and the accepted forms.
+    - name: Validate every mirror host
+      ansible.builtin.include_tasks: tasks/mirror_host_parse.yml
+      loop: "{{ mirror_hosts }}"
+      loop_control:
+        loop_var: _mh
+        label: "{{ _mh }}"
+
+    # The certificate is read from the first host, so its parse is the one that
+    # must survive the loop above.
+    - name: Parse the mirror host the certificate is read from
       ansible.builtin.include_tasks: tasks/mirror_host_parse.yml
       vars:
         _mh: "{{ mirror_hosts[0] }}"
