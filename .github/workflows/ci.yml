@@ -192,6 +192,7 @@ jobs:
         run: |
           ansible-playbook -i localhost, demo/tests/bmc_classification.yml
           ansible-playbook -i localhost, demo/tests/registry_verdict.yml
+          ansible-playbook -i localhost, demo/tests/bundle_facts_shapes.yml
 
       # Each node runs in its own process with its own filesystem root and
       # carries artifacts forward, the way Automation Controller runs a workflow

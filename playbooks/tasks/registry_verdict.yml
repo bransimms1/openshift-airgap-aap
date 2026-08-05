@@ -33,7 +33,7 @@
       {{ (_reg_in if (_reg_in is sequence and _reg_in is not string
                       and _reg_in is not mapping) else [])
          | select('mapping') | list }}
-    _reg_configured: >-
+    _reg_configured_raw: >-
       {{ (_cfg if (_cfg is sequence and _cfg is not string
                    and _cfg is not mapping) else []) | map('string') | list }}
     _unreachable_hosts: []
@@ -44,11 +44,32 @@
 # A result that does not name the host it tested cannot be tied to a configured
 # mirror, so it proves nothing about the environment even when its status is
 # 200. Identity is required before reachability is graded.
-- name: Record the host each result names
+#
+# CANONICALISATION. Both sides go through the same transformation, so a
+# configured " REGISTRY.EXAMPLE.COM:8443 " and a result "registry.example.com:8443"
+# are recognised as the same endpoint:
+#
+#   * trim surrounding whitespace
+#   * lowercase - DNS is case-insensitive and IPv6 hex is too; IPv4 and port
+#     digits are unaffected, so one lowercase covers every supported form
+#   * drop a single trailing root dot from the hostname, matching what
+#     tasks/mirror_host_parse.yml accepts
+#
+# Ports are preserved, so two endpoints differing only by port stay different.
+# Two spellings of the same IPv6 address - 2001:db8::1 and 2001:0db8:0000::1 -
+# are NOT merged: reporting a mismatch is the conservative outcome, and merging
+# would need a full address parse per result.
+- name: Record the host each result names, canonicalised
   ansible.builtin.set_fact:
-    _reg_hosts: >-
+    _reg_hosts: "{{ _reg_results | map(attribute='item', default='') | map('string') | map('trim') | list }}"
+    _reg_hosts_canon: >-
       {{ _reg_results | map(attribute='item', default='') | map('string')
-         | map('trim') | list }}
+         | map('trim') | map('lower') | map('regex_replace', '[.]$', '')
+         | map('regex_replace', '[.]:', ':') | list }}
+    _reg_configured: >-
+      {{ _reg_configured_raw | map('trim') | map('lower')
+         | map('regex_replace', '[.]$', '')
+         | map('regex_replace', '[.]:', ':') | list }}
 
 - name: Collect the hosts that did not answer on /v2/
   ansible.builtin.set_fact:
@@ -67,12 +88,12 @@
       {{ _cert.not_after is defined and _cert.not_after is not none
          and (_cert.not_after | string | trim | length) > 0 }}
     # Every result must name a non-blank host.
-    _reg_unnamed: "{{ _reg_hosts | select('equalto', '') | list | length }}"
+    _reg_unnamed: "{{ _reg_hosts_canon | select('equalto', '') | list | length }}"
     # Results must correspond one-for-one with the configured mirrors: none
     # missing, none unknown, none duplicated.
-    _reg_missing: "{{ _reg_configured | reject('in', _reg_hosts) | list }}"
-    _reg_unknown: "{{ _reg_hosts | reject('equalto', '') | reject('in', _reg_configured) | list }}"
-    _reg_duplicated: "{{ _reg_hosts | length != (_reg_hosts | unique | length) }}"
+    _reg_missing: "{{ _reg_configured | reject('in', _reg_hosts_canon) | list }}"
+    _reg_unknown: "{{ _reg_hosts_canon | reject('equalto', '') | reject('in', _reg_configured) | list }}"
+    _reg_duplicated: "{{ _reg_hosts_canon | length != (_reg_hosts_canon | unique | length) }}"
     # 200 is the only response that confirms the release repository exists.
     # 401 proves routing and TLS work and that the endpoint is there, but the
     # tag list is not enumerable without credentials, so payload existence is

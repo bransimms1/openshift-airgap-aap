@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Unit tests for check_workflow_consistency.py.
 
-The defect it exists to catch is drift the two hand-maintained lists agree on:
-delete a node from BOTH the harness and the CI assertion and they still match
-each other, while the Controller workflow still runs it.
+Two things are being proved:
+
+  * a coordinated edit cannot remove a required readiness capability, however
+    many files are changed together;
+  * legal reformatting of the Controller YAML does not blind the checker, which
+    the previous regex-based reader was vulnerable to.
 
   python3 .github/scripts/test_check_workflow_consistency.py
 """
@@ -16,7 +19,20 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = "‎.github/scripts/check_workflow_consistency.py".replace("‎", "")
+SCRIPT = ".github/scripts/check_workflow_consistency.py"
+
+WORKFLOW = "controller/workflow_templates.yml"
+TEMPLATES = "controller/job_templates.yml"
+HARNESS = "demo/node-isolation-test.sh"
+ASSERTION = ".github/scripts/assert_isolation_summary.py"
+
+# Exact fixture text, kept as constants so quoting stays readable.
+WF_VIPS = '        - "13-validate-vips"'
+JT_VIPS = ('        - { name: "13-validate-vips",     '
+           'playbook: "playbooks/13_validate_vips.yml",        '
+           'credentials: ["bastion-ssh"] }')
+HARNESS_VIPS = "  13_validate_vips\n"
+ASSERT_VIPS = '    "13_validate_vips",\n'
 
 
 def run_in(root: Path) -> tuple[int, str]:
@@ -30,15 +46,15 @@ def sandbox(tmp: Path) -> Path:
     root = tmp / "repo"
     for rel in (".github/scripts", "controller", "demo"):
         (root / rel).mkdir(parents=True, exist_ok=True)
-    for rel in (
-        ".github/scripts/check_workflow_consistency.py",
-        ".github/scripts/assert_isolation_summary.py",
-        "controller/workflow_templates.yml",
-        "controller/job_templates.yml",
-        "demo/node-isolation-test.sh",
-    ):
+    for rel in (SCRIPT, ASSERTION, WORKFLOW, TEMPLATES, HARNESS):
         shutil.copy(ROOT / rel, root / rel)
     return root
+
+
+def edit(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"fixture text not found in {path.name}: {old[:70]!r}"
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
 results: list[tuple[str, bool, str]] = []
@@ -51,47 +67,61 @@ def case(name: str, mutate, expect_failure: bool) -> None:
         rc, out = run_in(root)
         ok = (rc != 0) == expect_failure
         detail = "caught" if expect_failure else "clean"
-        results.append((name, ok, detail if ok else f"rc={rc} {out.strip()[:110]}"))
-
-
-def edit(path: Path, old: str, new: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    assert old in text, f"fixture text not found in {path.name}: {old[:60]!r}"
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+        results.append((name, ok, detail if ok else f"rc={rc} {out.strip()[:120]}"))
 
 
 case("unmodified repository is consistent", lambda r: None, False)
 
-# The headline case: both manual lists edited together, workflow untouched.
-def _drop_from_both(root: Path) -> None:
-    edit(root / "demo/node-isolation-test.sh", "  13_validate_vips\n", "")
-    edit(root / ".github/scripts/assert_isolation_summary.py",
-         '    "13_validate_vips",\n', "")
-    edit(root / ".github/scripts/check_workflow_consistency.py",
-         '    "13-validate-vips": "13_validate_vips",\n', "")
+
+def _coordinated_removal(root: Path) -> None:
+    """Delete 13-validate-vips from every file a maintainer could edit."""
+    edit(root / HARNESS, HARNESS_VIPS, "")
+    edit(root / ASSERTION, ASSERT_VIPS, "")
+    edit(root / WORKFLOW, WF_VIPS + "\n", "")
+    edit(root / TEMPLATES, JT_VIPS + "\n", "")
 
 
-case("13-validate-vips dropped from BOTH manual lists still fails",
-     _drop_from_both, True)
+case("coordinated removal from every editable file still fails",
+     _coordinated_removal, True)
 
 case("node removed from the harness only fails",
-     lambda r: edit(r / "demo/node-isolation-test.sh", "  13_validate_vips\n", ""), True)
+     lambda r: edit(r / HARNESS, HARNESS_VIPS, ""), True)
 case("node removed from the CI assertion only fails",
-     lambda r: edit(r / ".github/scripts/assert_isolation_summary.py",
-                    '    "13_validate_vips",\n', ""), True)
+     lambda r: edit(r / ASSERTION, ASSERT_VIPS, ""), True)
 case("extra node in the harness fails",
-     lambda r: edit(r / "demo/node-isolation-test.sh", "  20_readiness_report\n",
+     lambda r: edit(r / HARNESS, "  20_readiness_report\n",
                     "  20_readiness_report\n  99_surprise\n"), True)
 case("workflow node removed while the lists keep it fails",
-     lambda r: edit(r / "controller/workflow_templates.yml",
-                    '        - "13-validate-vips"\n', ""), True)
+     lambda r: edit(r / WORKFLOW, WF_VIPS + "\n", ""), True)
 case("a job template pointing at a different playbook fails",
-     lambda r: edit(r / "controller/job_templates.yml",
-                    'playbook: "playbooks/13_validate_vips.yml"',
-                    'playbook: "playbooks/13_validate_something_else.yml"'), True)
+     lambda r: edit(r / TEMPLATES, 'playbook: "playbooks/13_validate_vips.yml"',
+                    'playbook: "playbooks/13_validate_other.yml"'), True)
 case("a renamed job template fails",
-     lambda r: edit(r / "controller/job_templates.yml",
-                    'name: "13-validate-vips"', 'name: "13-validate-vip"'), True)
+     lambda r: edit(r / TEMPLATES, 'name: "13-validate-vips"',
+                    'name: "13-validate-vip"'), True)
+case("a workflow node with no job template fails",
+     lambda r: edit(r / WORKFLOW, WF_VIPS, '        - "13-validate-nothing"'), True)
+
+# Formatting variations the old regex reader could not see.
+case("single-quoted workflow values are still read",
+     lambda r: edit(r / WORKFLOW, WF_VIPS, "        - '13-validate-vips'"), False)
+case("an extra single-quoted workflow node is detected",
+     lambda r: edit(r / WORKFLOW, WF_VIPS,
+                    WF_VIPS + "\n        - '99-extra-check'"), True)
+case("reordered job-template keys are still read",
+     lambda r: edit(r / TEMPLATES, JT_VIPS,
+                    '        - { playbook: "playbooks/13_validate_vips.yml", '
+                    'credentials: ["bastion-ssh"], name: "13-validate-vips" }'), False)
+case("expanded block formatting is still read",
+     lambda r: edit(r / TEMPLATES, JT_VIPS,
+                    '        - name: "13-validate-vips"\n'
+                    '          playbook: "playbooks/13_validate_vips.yml"\n'
+                    '          credentials: ["bastion-ssh"]'), False)
+case("single-quoted job-template values are still read",
+     lambda r: edit(r / TEMPLATES, JT_VIPS,
+                    "        - { name: '13-validate-vips', "
+                    "playbook: 'playbooks/13_validate_vips.yml', "
+                    "credentials: ['bastion-ssh'] }"), False)
 
 width = max(len(n) for n, _, _ in results)
 failed = 0

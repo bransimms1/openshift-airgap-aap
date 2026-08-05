@@ -123,7 +123,7 @@
 - name: Decode and parse
   ansible.builtin.set_fact:
     _bundle_yaml: >-
-      {{ _bundle_yaml | default({})
+      {{ _bundle_yaml | default({}, true)
          | combine({ item.item: (item.content | b64decode | from_yaml) }) }}
   loop: "{{ _slurped.results | selectattr('content', 'defined') | list }}"
   loop_control:
@@ -148,14 +148,50 @@
       IDMS/ITMS and the downstream cluster resource tasks will not apply.
 
 # --- Derive ---------------------------------------------------------------
+# Parent objects are normalised before any child is read. Guarding only the
+# children - apiVIPs | default([], true) - still dereferences .apiVIPs from
+# whatever platform.baremetal happens to be, and a bundle with
+# "baremetal: null", "platform: null", or a baremetal that is a list or a
+# string raises before the child default can apply.
+#
+# These normalise to an empty mapping and then fail the bundle assertion below
+# with a schema message, rather than an undefined-variable traceback: a
+# malformed bundle is a validation finding, which is what this role exists to
+# produce.
+- name: Normalise the bundle's nested objects before reading their children
+  ansible.builtin.set_fact:
+    _ic_platform: "{{ _p if _p is mapping else {} }}"
+    _ic_baremetal: "{{ _bm if _bm is mapping else {} }}"
+    _ic_networking: "{{ _net if _net is mapping else {} }}"
+  vars:
+    _p: "{{ ic.platform | default({}, true) }}"
+    _bm: "{{ (ic.platform | default({}, true)).baremetal | default({}, true)
+             if (ic.platform | default({}, true)) is mapping else {} }}"
+    _net: "{{ ic.networking | default({}, true) }}"
+
+- name: The bundle must declare a bare-metal platform with VIPs and a machine network
+  ansible.builtin.assert:
+    that:
+      - _ic_baremetal | length > 0
+      - (_ic_baremetal.apiVIPs | default([], true)) | length > 0
+      - (_ic_baremetal.ingressVIPs | default([], true)) | length > 0
+      - (_ic_networking.machineNetwork | default([], true)) | length > 0
+    fail_msg: >-
+      install-config.yaml does not declare a usable bare-metal platform.
+      platform.baremetal must be a mapping with apiVIPs and ingressVIPs, and
+      networking.machineNetwork must list at least one CIDR.
+      Got platform={{ ic.platform | default('undefined') }}.
+
 - name: Derive the facts every downstream check depends on
   ansible.builtin.set_fact:
     cluster_name: "{{ ic.metadata.name }}"
     base_domain: "{{ ic.baseDomain }}"
     cluster_fqdn: "{{ ic.metadata.name }}.{{ ic.baseDomain }}"
-    api_vips: "{{ ic.platform.baremetal.apiVIPs | default([], true) }}"
-    ingress_vips: "{{ ic.platform.baremetal.ingressVIPs | default([], true) }}"
-    machine_networks: "{{ ic.networking.machineNetwork | map(attribute='cidr') | list }}"
+    api_vips: "{{ _ic_baremetal.apiVIPs | default([], true) }}"
+    ingress_vips: "{{ _ic_baremetal.ingressVIPs | default([], true) }}"
+    machine_networks: >-
+      {{ (_ic_networking.machineNetwork | default([], true))
+         | map(attribute='cidr') | list }}
     ntp_sources: "{{ (ac.additionalNTPSources | default([], true)) if ac is defined else [] }}"
     rendezvous_ip: "{{ ac.rendezvousIP | default(omit) if ac is defined else omit }}"
     trust_bundle: "{{ ic.additionalTrustBundle | default('', true) }}"

@@ -103,49 +103,49 @@
 
       # --- values, not just keys -------------------------------------------
       - name: "Id: null must not pass"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: null, PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: null, PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: 'Id: "" must not pass'
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: whitespace-only identifier must not pass
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {SerialNumber: "   ", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {SerialNumber: "   ", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "PowerState: null must not pass"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "System.Embedded.1", PowerState: null}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "System.Embedded.1", PowerState: null}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: 'PowerState: "" must not pass'
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "System.Embedded.1", PowerState: ""}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "System.Embedded.1", PowerState: ""}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: unrecognised PowerState must not pass
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "System.Embedded.1", PowerState: "Melted"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "System.Embedded.1", PowerState: "Melted"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: numeric identifier is usable once normalised
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: 1, PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: 1, PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -154,7 +154,7 @@
 
       # --- malformed entries must not crash ---------------------------------
       - name: entry whose second element is not a mapping
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, "not-a-mapping"]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, "not-a-mapping"]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
@@ -187,7 +187,7 @@
             system:
               entries:
                 - "garbage"
-                - [{u: "/2"}, {Id: "System.Embedded.2", PowerState: "On"}]
+                - [{system_uri: "/redfish/v1/Systems/2"}, {Id: "System.Embedded.2", PowerState: "On"}]
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.15.1"}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -196,7 +196,7 @@
 
       # --- firmware normalisation -------------------------------------------
       - name: empty baseline is BASELINE_UNSET, not DRIFT
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
         baseline: {bios_version: ""}
         reachable: true
@@ -204,7 +204,7 @@
         firmware_state: BASELINE_UNSET
 
       - name: whitespace-only baseline is BASELINE_UNSET
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
         baseline: {bios_version: "   "}
         reachable: true
@@ -212,7 +212,7 @@
         firmware_state: BASELINE_UNSET
 
       - name: null baseline is BASELINE_UNSET
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
         baseline: {bios_version: null}
         reachable: true
@@ -220,7 +220,7 @@
         firmware_state: BASELINE_UNSET
 
       - name: padded and upper-cased rollback Id is excluded
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw:
           redfish_facts:
             firmware:
@@ -234,7 +234,7 @@
         firmware_state: MATCH
 
       - name: only a rollback image reported is UNKNOWN_INSTALLED
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Id: "Previous-1-2.14.0", Version: "2.14.0"}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -242,7 +242,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: integer firmware version is normalised to a string
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: 2}]}}}
         baseline: {bios_version: "2"}
         reachable: true
@@ -250,7 +250,7 @@
         firmware_state: MATCH
 
       - name: float firmware version is normalised to a string
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: 2.15}]}}}
         baseline: {bios_version: "2.15"}
         reachable: true
@@ -258,7 +258,7 @@
         firmware_state: MATCH
 
       - name: null firmware version is UNKNOWN_INSTALLED
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: null}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -266,37 +266,146 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: empty firmware version is UNKNOWN_INSTALLED
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "  "}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
         bios_installed: "unknown"
         firmware_state: UNKNOWN_INSTALLED
 
+      # --- control characters in identifiers ---------------------------------
+      - name: "Id: NUL only must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/s/1"}, {Id: "\u0000", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "Id: tab only must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/s/1"}, {Id: "\t", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "Id with an embedded NUL must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/s/1"}, {Id: "ABC\u0000DEF", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "Id with an embedded newline must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/s/1"}, {Id: "ABC\nDEF", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "Id with surrounding whitespace is trimmed and accepted"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/s/1"}, {Id: " System.Embedded.1 ", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "Id with vendor punctuation is accepted"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/s/1"}, {Id: "ABC-123_456", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+
+      # --- first element of the (uri, record) pair ---------------------------
+      - name: reversed pair - two system records, no uri key
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - - {Id: "System.1"}
+                  - {Id: "System.2", PowerState: "On"}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: first element is a list
+        sys: {redfish_facts: {system: {entries: [[["/s/1"], {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: first element is null
+        sys: {redfish_facts: {system: {entries: [[null, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: first element is a boolean
+        sys: {redfish_facts: {system: {entries: [[true, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: first element is a bare uri string
+        sys: {redfish_facts: {system: {entries: [["/redfish/v1/Systems/1", {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: chassis_uri metadata key is also accepted
+        sys: {redfish_facts: {system: {entries: [[{chassis_uri: "/redfish/v1/Chassis/1"}, {Id: "c1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: malformed and valid entries interleaved
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - - {Id: "reversed.1"}
+                  - {Id: "reversed.2", PowerState: "On"}
+                - "garbage"
+                - [{system_uri: "/s/9"}, {Id: "System.Embedded.9", PowerState: "Off"}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "Off"
+        firmware_state: UNKNOWN_INSTALLED
+
       # --- identifier TYPE rules --------------------------------------------
       - name: "Id: false must not pass (false | string is 'False')"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: false, PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: false, PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "Id: true must not pass"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: true, PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: true, PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "Id: [] must not pass"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: [], PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: [], PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "Id: {} must not pass"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: {}, PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: {}, PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
@@ -304,7 +413,7 @@
 
       # Numeric zero IS a valid identifier - documented decision.
       - name: "Id: 0 is accepted"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: 0, PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: 0, PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -312,7 +421,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "Id: 12345 is accepted"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: 12345, PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: 12345, PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -320,7 +429,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: 'Id: "0" is accepted'
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "0", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "0", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -328,7 +437,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: valid SerialNumber alone is enough
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {SerialNumber: "CN7016", PowerState: "Off"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {SerialNumber: "CN7016", PowerState: "Off"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -336,7 +445,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: valid ServiceTag alone is enough
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {ServiceTag: "7XK2M3", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {ServiceTag: "7XK2M3", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -366,14 +475,14 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: entry with three elements
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}, "extra"]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}, "extra"]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
         firmware_state: UNKNOWN_INSTALLED
 
       - name: entry whose second element is a list
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, []]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, []]]}}}
         fw: {redfish_facts: {firmware: {entries: []}}}
         baseline: {bios_version: "2.15.1"}
         reachable: false
@@ -388,7 +497,7 @@
 
       # --- firmware TYPE rules ----------------------------------------------
       - name: "baseline: [] is BASELINE_UNSET"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
         baseline: {bios_version: []}
         reachable: true
@@ -396,7 +505,7 @@
         firmware_state: BASELINE_UNSET
 
       - name: "baseline: {} is BASELINE_UNSET"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
         baseline: {bios_version: {}}
         reachable: true
@@ -404,7 +513,7 @@
         firmware_state: BASELINE_UNSET
 
       - name: "baseline: true is BASELINE_UNSET"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
         baseline: {bios_version: true}
         reachable: true
@@ -412,7 +521,7 @@
         firmware_state: BASELINE_UNSET
 
       - name: "baseline: 0 is a usable numeric baseline"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: 0}]}}}
         baseline: {bios_version: 0}
         reachable: true
@@ -420,7 +529,7 @@
         firmware_state: MATCH
 
       - name: 'baseline: "0" is a usable string baseline'
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "0"}]}}}
         baseline: {bios_version: "0"}
         reachable: true
@@ -428,7 +537,7 @@
         firmware_state: MATCH
 
       - name: "version: true is UNKNOWN_INSTALLED"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: true}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -436,7 +545,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "version: false is UNKNOWN_INSTALLED"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: false}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -444,7 +553,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "version: [] is UNKNOWN_INSTALLED"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: []}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -452,7 +561,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "version: {} is UNKNOWN_INSTALLED"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: {}}]}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true
@@ -460,7 +569,7 @@
         firmware_state: UNKNOWN_INSTALLED
 
       - name: "firmware entries: null"
-        sys: {redfish_facts: {system: {entries: [[{u: "/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
         fw: {redfish_facts: {firmware: {entries: null}}}
         baseline: {bios_version: "2.15.1"}
         reachable: true

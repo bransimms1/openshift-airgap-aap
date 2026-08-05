@@ -9,6 +9,10 @@
   vars:
     # Same default the playbook uses when a mirror host carries no port.
     registry_port_default: 8443
+    _label63: "{{ 'a' * 63 }}"
+    _label64: "{{ 'a' * 64 }}"
+    _name253: "{{ (['a' * 49] * 5) | join('.') ~ '.abc' }}"
+    _name254: "{{ (['a' * 49] * 5) | join('.') ~ '.abcd' }}"
     addresses:
       # --- accepted ---------------------------------------------------------
       - {host: "registry.example.com", hostname: "registry.example.com", port: "8443", error: ""}
@@ -40,6 +44,32 @@
       - {host: "[::1]?query", error_contains: "path, query or fragment"}
       - {host: "[::1]#fragment", error_contains: "path, query or fragment"}
       - {host: "[2001:db8::1]notaport", error_contains: "trailing text"}
+      # --- trailing root dot -------------------------------------------------
+      - {host: "registry.example.com.", hostname: "registry.example.com", port: "8443", error: ""}
+      - {host: "REGISTRY.EXAMPLE.COM.", hostname: "REGISTRY.EXAMPLE.COM", port: "8443", error: ""}
+      - {host: "registry.example.com.:8443", hostname: "registry.example.com", port: "8443", error: ""}
+      - {host: "registry.example.com..", error_contains: "not a hostname"}
+      - {host: ".example.com", error_contains: "not a hostname"}
+      # --- DNS length limits -------------------------------------------------
+      # Long names are built here rather than written out, to keep the file
+      # inside the line-length limit. 63 is the maximum DNS label; 253 the
+      # maximum name.
+      - host: "{{ _label63 }}.example.com"
+        hostname: "{{ _label63 }}.example.com"
+        port: "8443"
+        error: ""
+      - host: "{{ _label64 }}.example.com"
+        error_contains: "63 characters"
+      - host: "{{ _name253 }}"
+        hostname: "{{ _name253 }}"
+        port: "8443"
+        error: ""
+      - host: "{{ _name254 }}"
+        error_contains: "253 characters"
+      - {host: "REGISTRY.EXAMPLE.COM:8443", hostname: "REGISTRY.EXAMPLE.COM", port: "8443", error: ""}
+      - {host: "12345.example.com", hostname: "12345.example.com", port: "8443", error: ""}
+      - {host: "-bad.example.com", error_contains: "not a hostname"}
+      - {host: "bad-.example.com", error_contains: "not a hostname"}
       # --- rejected ---------------------------------------------------------
       - {host: "registry.example.com:", error_contains: "port is empty"}
       - {host: "registry.example.com:notaport", error_contains: "not a number"}
@@ -52,6 +82,88 @@
       - {host: "registry.example.com:70000", error_contains: "out of range"}
       - {host: "registry.example.com:8443:extra", error_contains: "not a valid IPv6"}
     cases:
+      # --- host identity canonicalisation ------------------------------------
+      - name: configured host with surrounding whitespace still matches
+        reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        hosts: ["  registry.example.com:8443  "]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: result host with surrounding whitespace still matches
+        reg: {results: [{status: 200, item: " registry.example.com:8443 "}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: uppercase configured DNS hostname still matches
+        reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        hosts: ["REGISTRY.EXAMPLE.COM:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: uppercase result DNS hostname still matches
+        reg: {results: [{status: 200, item: "REGISTRY.EXAMPLE.COM:8443"}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: trailing root dot is normalised away on both sides
+        reg: {results: [{status: 200, item: "registry.example.com.:8443"}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: matching IPv4 host and port
+        reg: {results: [{status: 200, item: "10.42.10.5:5000"}]}
+        hosts: ["10.42.10.5:5000"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: matching bracketed IPv6 and port, case-insensitively
+        reg: {results: [{status: 200, item: "[2001:DB8::1]:8443"}]}
+        hosts: ["[2001:db8::1]:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: genuinely different ports must not merge
+        reg: {results: [{status: 200, item: "registry.example.com:5000"}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: genuinely different hosts must not merge
+        reg: {results: [{status: 200, item: "other.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
       # --- null-safety and host identity ------------------------------------
       - name: "null registry results cannot pass"
         reg: {results: null}

@@ -1,0 +1,63 @@
+---
+# Malformed install-config shapes must produce a controlled schema failure, not
+# an undefined-variable traceback.
+#
+#   ansible-playbook -i localhost, demo/tests/bundle_facts_shapes.yml
+- name: Bundle fact normalisation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cases:
+      - name: "platform.baremetal is null"
+        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: null}}
+      - name: "platform is null"
+        ic: {metadata: {name: c}, baseDomain: e.com, platform: null}
+      - name: "platform.baremetal is a list"
+        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: []}}
+      - name: "platform.baremetal is a string"
+        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: "invalid"}}
+      - name: "platform is absent entirely"
+        ic: {metadata: {name: c}, baseDomain: e.com}
+      - name: "baremetal present but VIPs missing"
+        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: {}}}
+      - name: "networking is null"
+        ic:
+          metadata: {name: c}
+          baseDomain: e.com
+          platform: {baremetal: {apiVIPs: ["10.0.0.1"], ingressVIPs: ["10.0.0.2"]}}
+          networking: null
+  tasks:
+
+    - name: Every malformed shape must fail the schema assertion, not raise
+      ansible.builtin.include_tasks: bundle_shape_case.yml
+      loop: "{{ cases }}"
+      loop_control:
+        loop_var: case
+        label: "{{ case.name }}"
+
+    # The accumulator must survive starting from an explicit null.
+    - name: A null _bundle_yaml accumulator still accepts a parsed document
+      ansible.builtin.set_fact:
+        _bundle_yaml: null
+
+    - name: Combine into the null accumulator
+      ansible.builtin.set_fact:
+        _bundle_yaml: >-
+          {{ _bundle_yaml | default({}, true)
+             | combine({item.item: (item.content | b64decode | from_yaml)}) }}
+      loop:
+        - {item: "install-config.yaml", content: "YmFzZURvbWFpbjogZS5jb20K"}
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: The document was added
+      ansible.builtin.assert:
+        that:
+          - _bundle_yaml is mapping
+          - _bundle_yaml['install-config.yaml'].baseDomain == 'e.com'
+        success_msg: "ok: a null accumulator was replaced and the document parsed"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ cases | length }} malformed bundle shapes handled, plus the null accumulator."

@@ -1,0 +1,37 @@
+---
+# One malformed install-config shape. The normalisation and assertion are the
+# same expressions roles/airgap_bundle_facts/tasks/main.yml uses.
+
+- name: Normalise the nested objects
+  ansible.builtin.set_fact:
+    _ic_platform: "{{ _p if _p is mapping else {} }}"
+    _ic_baremetal: "{{ _bm if _bm is mapping else {} }}"
+    _ic_networking: "{{ _net if _net is mapping else {} }}"
+  vars:
+    ic: "{{ case.ic }}"
+    _p: "{{ ic.platform | default({}, true) }}"
+    _bm: "{{ (ic.platform | default({}, true)).baremetal | default({}, true)
+             if (ic.platform | default({}, true)) is mapping else {} }}"
+    _net: "{{ ic.networking | default({}, true) }}"
+
+- name: The schema assertion must fail, and fail cleanly
+  block:
+    - name: Apply the shipped assertion
+      ansible.builtin.assert:
+        that:
+          - _ic_baremetal | length > 0
+          - (_ic_baremetal.apiVIPs | default([], true)) | length > 0
+          - (_ic_baremetal.ingressVIPs | default([], true)) | length > 0
+          - (_ic_networking.machineNetwork | default([], true)) | length > 0
+        fail_msg: "schema assertion (expected)"
+    - name: Reaching here means the malformed shape was accepted
+      ansible.builtin.fail:
+        msg: "FAILED: {{ case.name }} was accepted by the schema assertion"
+  rescue:
+    - name: Confirm it was the assertion that failed, not a templating error
+      ansible.builtin.assert:
+        that: "'schema assertion (expected)' in (ansible_failed_result.msg | default(''))"
+        success_msg: "ok: {{ case.name }} -> controlled schema failure"
+        fail_msg: >-
+          FAILED: {{ case.name }} raised something other than the schema
+          assertion: {{ ansible_failed_result.msg | default('') | truncate(120) }}

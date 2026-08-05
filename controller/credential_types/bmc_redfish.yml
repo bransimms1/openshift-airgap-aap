@@ -27,5 +27,9 @@
             bmc_username: "{{ '{{ bmc_username }}' }}"
             bmc_password: "{{ '{{ bmc_password }}' }}"
             bmc_validate_certs: "{{ '{{ bmc_validate_certs }}' }}"
-        controller_host: "{{ controller_hostname }}"
-        controller_oauthtoken: "{{ controller_token }}"
+        # default(omit), like every other controller playbook: run from inside
+        # AAP with a Red Hat Ansible Automation Platform credential attached and
+        # the collection reads host and token from the environment. Requiring
+        # the variables here would fail templating before that could happen.
+        controller_host: "{{ controller_hostname | default(omit) }}"
+        controller_oauthtoken: "{{ controller_token | default(omit) }}"

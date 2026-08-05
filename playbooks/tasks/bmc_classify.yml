@@ -20,12 +20,16 @@
 #
 # TYPE RULES, applied to every value that comes off the wire:
 #
-#   identifier   a non-blank string, or a number. Numeric zero IS accepted: a
+#   identifier   a printable non-blank string, or a number. Numeric zero IS
+#                accepted: a
 #                Redfish Id of 0 names a system as well as any other, and
 #                rejecting it would fail a working BMC. Booleans, lists,
 #                mappings, null and blank strings are rejected - `false | string`
 #                is "False", which is non-blank, so a string cast alone would
-#                have accepted it.
+#                have accepted it. Strings must also be printable ASCII: trim
+#                removes tabs and spaces but not NUL, so "\u0000" survives it
+#                and is otherwise truthy. Punctuation is fine -
+#                System.Embedded.1, CN7016ABC123 and ABC-123_456 all pass.
 #   PowerState   a string in the Redfish enumeration. Nothing else.
 #   version      a non-blank string, or a number, normalised to a string.
 #
@@ -69,6 +73,13 @@
     # Exactly two elements: a one-element list holding a valid-looking record
     # is still not the documented shape.
     - (item | length) == 2
+    # community.general builds each entry as ({uri_name: uri}, record), where
+    # uri_name is system_uri, chassis_uri or manager_uri - see
+    # _redfish_utils.aggregate(). Requiring that key rejects a reversed pair,
+    # where both elements are system records and the first would otherwise be
+    # taken as metadata.
+    - (item | first) is mapping
+    - ((item | first).keys() | select('search', '_uri$') | list | length) > 0
     - (item | last) is mapping
 
 # A record is usable only if the downstream workflow could act on it, and that
@@ -85,7 +96,12 @@
     _ids: >-
       {{ (bmc_identifier_keys | default(_bmc_default_identifier_keys))
          | select('in', item) | map('extract', item) | list }}
-    _id_strings: "{{ _ids | select('string') | map('trim') | select('truthy') | list }}"
+    # '[ -~]' is printable ASCII, space through tilde, and needs no backslash
+    # escape - which is why it is written as a range rather than a class like
+    # \S that would have to survive YAML, Jinja and regex quoting.
+    _id_strings: >-
+      {{ _ids | select('string') | map('trim') | select('truthy')
+         | select('match', '^[ -~]+$') | list }}
     _id_numbers: "{{ _ids | reject('boolean') | select('number') | list }}"
   when:
     - item.error is not defined

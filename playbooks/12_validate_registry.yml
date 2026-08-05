@@ -47,7 +47,9 @@
           - mirror_hosts is not string
           - mirror_hosts is not mapping
           - (mirror_hosts | length) > 0
-          - mirror_hosts | reject('string') | reject('number') | list | length == 0
+          # Strings only. A number would be stringified by the parser and then
+          # accepted by the hostname matcher, contradicting the documented form.
+          - mirror_hosts | reject('string') | list | length == 0
         fail_msg: >-
           mirror_hosts must be a non-empty list of host strings, for example:
             mirror_hosts:
