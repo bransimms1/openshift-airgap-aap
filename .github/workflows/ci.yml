@@ -185,32 +185,66 @@ jobs:
       - name: Install collections
         run: ansible-galaxy collection install -r execution-environment/requirements.yml
 
+      # Fixture-driven tests for the classification logic the readiness
+      # branches share. They include the same task files the playbooks do, so a
+      # change to the rules is graded here rather than only in production.
+      - name: Classification tests
+        run: |
+          ansible-playbook -i localhost, demo/tests/bmc_classification.yml
+          ansible-playbook -i localhost, demo/tests/registry_verdict.yml
+
       # Each node runs in its own process with its own filesystem root and
       # carries artifacts forward, the way Automation Controller runs a workflow
       # on OpenShift. A node that depends on a sibling's files fails here.
+      # Asserted against the harness's structured summary, not against the log.
+      # A node name appearing in output does not prove that node's status.
       - name: passing scenario reaches the gate
         run: |
-          out=$(demo/node-isolation-test.sh passing)
-          echo "$out"
-          echo "$out" | grep -q "All nodes succeeded independently" \
-            || { echo "::error::a node failed"; exit 1; }
-          echo "$out" | grep -q "READY_WITH_LIMITATIONS" \
-            || { echo "::error::expected READY_WITH_LIMITATIONS"; exit 1; }
-          # Confirm artifacts crossed a node boundary, so the step cannot pass
-          # with every node having derived nothing.
-          echo "$out" | grep -q "expected_dns" \
-            || { echo "::error::workflow artifacts did not cross node boundaries"; exit 1; }
+          ISOLATION_SUMMARY=/tmp/passing.json demo/node-isolation-test.sh passing
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("/tmp/passing.json"))
+          errs = []
+          if d["verdict"] != "READY_WITH_LIMITATIONS":
+              errs.append(f"verdict is {d['verdict']}, expected READY_WITH_LIMITATIONS")
+          if d["failed_nodes"]:
+              errs.append(f"nodes failed: {d['failed_nodes']}")
+          for node in ("00_bundle_intake", "10_validate_dns", "20_readiness_report"):
+              if d["nodes"].get(node) != "ok":
+                  errs.append(f"{node} is {d['nodes'].get(node)}, expected ok")
+          # Artifacts must actually have crossed a node boundary.
+          for artifact in ("expected_dns", "cluster_fqdn", "readiness_overall"):
+              if artifact not in d["artifacts"]:
+                  errs.append(f"artifact {artifact} did not cross node boundaries")
+          for e in errs:
+              print(f"::error::{e}")
+          sys.exit(1 if errs else 0)
+          PY
 
       - name: failing_dns scenario stops at DNS and blocks the gate
         run: |
-          out=$(demo/node-isolation-test.sh failing_dns)
-          echo "$out"
-          echo "$out" | grep -q "NOT_READY" \
-            || { echo "::error::expected NOT_READY"; exit 1; }
-          echo "$out" | grep -q "10_validate_dns" \
-            || { echo "::error::DNS branch should have failed"; exit 1; }
-          echo "$out" | grep -q "20_readiness_report" \
-            || { echo "::error::the report node must fail, which is what makes the approval gate unreachable"; exit 1; }
+          ISOLATION_SUMMARY=/tmp/failing.json demo/node-isolation-test.sh failing_dns || true
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("/tmp/failing.json"))
+          errs = []
+          if d["verdict"] != "NOT_READY":
+              errs.append(f"verdict is {d['verdict']}, expected NOT_READY")
+          if d["nodes"].get("10_validate_dns") != "failed":
+              errs.append(f"10_validate_dns is {d['nodes'].get('10_validate_dns')}, expected failed")
+          # The report node must fail: that is what makes the approval gate
+          # unreachable, because approval hangs off its success edge.
+          if d["nodes"].get("20_readiness_report") != "failed":
+              errs.append(f"20_readiness_report is {d['nodes'].get('20_readiness_report')}, expected failed")
+          # Everything else must still have run - a failure that takes the whole
+          # workflow down would also produce NOT_READY.
+          for node, status in d["nodes"].items():
+              if node not in ("10_validate_dns", "20_readiness_report") and status != "ok":
+                  errs.append(f"{node} is {status}, expected ok")
+          for e in errs:
+              print(f"::error::{e}")
+          sys.exit(1 if errs else 0)
+          PY
 
   docs:
     name: Documentation and fixture checks

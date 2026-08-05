@@ -1,0 +1,115 @@
+---
+# Fixture-driven tests for playbooks/tasks/registry_verdict.yml.
+#
+#   ansible-playbook -i localhost, demo/tests/registry_verdict.yml
+- name: Registry verdict
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cases:
+      - name: everything verified
+        reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
+      - name: authenticated mirror - payload unconfirmed, not PASS
+        reg: {results: [{status: 401, item: "registry.example.com:8443"}]}
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 401}
+        cert_ok: true
+        payload_state: UNCONFIRMED
+        status: UNCONFIRMED
+
+      - name: release repository missing (404)
+        reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 404}
+        cert_ok: true
+        payload_state: MISSING
+        status: FAIL
+
+      - name: payload probe did not run at all
+        reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        cert: {not_after: "20270101000000Z"}
+        payload: {failed: true}
+        cert_ok: true
+        payload_state: MISSING
+        status: FAIL
+
+      - name: certificate could not be read
+        reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        cert: {failed: true, msg: "handshake failure"}
+        payload: {status: 200}
+        cert_ok: false
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: certificate present but empty not_after
+        reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        cert: {not_after: ""}
+        payload: {status: 200}
+        cert_ok: false
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: a host did not answer on /v2/
+        reg: {results: [{status: 200, item: "a.example.com:8443"}, {status: -1, item: "b.example.com:8443"}]}
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        unreachable: ["b.example.com:8443"]
+        status: FAIL
+
+      - name: unreachable host outranks an unconfirmed payload
+        reg: {results: [{status: 503, item: "a.example.com:443"}]}
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 401}
+        cert_ok: true
+        payload_state: UNCONFIRMED
+        unreachable: ["a.example.com:443"]
+        status: FAIL
+  tasks:
+
+    - name: Grade every fixture through the shipped rules
+      ansible.builtin.include_tasks: registry_case.yml
+      vars:
+        _reg: "{{ case.reg }}"
+        _cert: "{{ case.cert }}"
+        _payload: "{{ case.payload }}"
+      loop: "{{ cases }}"
+      loop_control:
+        loop_var: case
+        label: "{{ case.name }}"
+
+    - name: Verify mirror-host port parsing
+      ansible.builtin.assert:
+        that:
+          - (item.host | split(':') | first) == item.hostname
+          - ((item.host | split(':') | last) if (item.host | split(':') | length) > 1
+             else 8443) | string == item.port
+        success_msg: "ok: {{ item.host }} -> {{ item.hostname }}:{{ item.port }}"
+        fail_msg: "FAILED: {{ item.host }} did not parse to {{ item.hostname }}:{{ item.port }}"
+      loop:
+        - host: "registry.example.com:443"
+          hostname: "registry.example.com"
+          port: "443"
+        - host: "registry.example.com:8443"
+          hostname: "registry.example.com"
+          port: "8443"
+        - host: "registry.example.com:5000"
+          hostname: "registry.example.com"
+          port: "5000"
+        - host: "registry.example.com"
+          hostname: "registry.example.com"
+          port: "8443"
+      loop_control:
+        label: "{{ item.host }}"
+
+    - name: Report the number of cases graded
+      ansible.builtin.debug:
+        msg: "{{ cases | length }} registry verdict cases passed, plus 4 port-parsing cases."

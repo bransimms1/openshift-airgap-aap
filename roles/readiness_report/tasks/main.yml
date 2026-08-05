@@ -7,16 +7,20 @@
 # by another workflow node, because on OpenShift there is no shared filesystem
 # between execution pods.
 #
-# Four per-branch states:
-#   PASS       the check ran and the environment satisfied it
-#   FAIL       the check ran and it did not
-#   SIMULATED  demo mode; the check did not contact anything real
-#   SKIPPED    the branch did not run, or was deliberately not run
+# Five per-branch states:
+#   PASS         the check ran and the environment satisfied it
+#   FAIL         the check ran and it did not
+#   UNCONFIRMED  the check ran, found nothing wrong, and could not positively
+#                verify what it set out to verify - an authenticated mirror
+#                that will not enumerate its release tags, for example
+#   SIMULATED    demo mode; the check did not contact anything real
+#   SKIPPED      the branch did not run, or was deliberately not run
 #
 # Three overall states:
 #   READY                   every branch executed and passed
 #   READY_WITH_LIMITATIONS  nothing failed, but something was not executed
-#                           against a real environment
+#                           against a real environment, or ran without being
+#                           able to confirm its result
 #   NOT_READY               at least one branch failed
 
 - name: Normalise every branch into a known state
@@ -36,7 +40,8 @@
          | selectattr('value.status', 'eq', 'FAIL') | map(attribute='key') | list }}
     _not_executed: >-
       {{ _checks | dict2items | selectattr('value.status', 'defined')
-         | selectattr('value.status', 'in', ['SIMULATED', 'SKIPPED']) | map(attribute='key') | list }}
+         | selectattr('value.status', 'in', ['SIMULATED', 'SKIPPED', 'UNCONFIRMED'])
+         | map(attribute='key') | list }}
 
 - name: Grade readiness
   ansible.builtin.set_fact:
@@ -108,7 +113,8 @@
       This job fails deliberately, which makes the approval gate unreachable.
       Nothing downstream can run until the environment is fixed and revalidated.
       {% elif report.overall == 'READY_WITH_LIMITATIONS' %}
-      Nothing failed, but these were not executed against a real environment:
+      Nothing failed, but these were not executed against a real environment,
+      or could not confirm their result:
         {{ report.not_executed | join(', ') }}
       Approval is available. The approver is accepting those limitations.
       {% else %}

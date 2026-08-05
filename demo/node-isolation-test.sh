@@ -18,6 +18,14 @@
 # Usage:
 #   demo/node-isolation-test.sh passing
 #   demo/node-isolation-test.sh failing_dns
+#
+# Set ISOLATION_SUMMARY to a path to also write a machine-readable result:
+#
+#   {"scenario": ..., "verdict": ..., "nodes": {"10_validate_dns": "failed"},
+#    "failed_nodes": [...], "artifacts": [...]}
+#
+# CI asserts against that file rather than grepping node names out of the log:
+# a node name appearing in the output does not prove that the node failed.
 set -uo pipefail
 
 SCENARIO="${1:-passing}"
@@ -64,6 +72,8 @@ echo "Each node runs in its own process with its own filesystem root."
 echo
 
 FAILED_NODES=()
+STATUS_FILE="${WORK}/node-status.tsv"
+: > "${STATUS_FILE}"
 n=0
 for pb in "${PLAYBOOKS[@]}"; do
   n=$((n + 1))
@@ -97,9 +107,11 @@ PY
 
   if [ ${rc} -eq 0 ]; then
     printf '  %-28s OK\n' "${pb}"
+    printf '%s\tok\n' "${pb}" >> "${STATUS_FILE}"
   else
     printf '  %-28s FAILED (rc=%s)\n' "${pb}" "${rc}"
     FAILED_NODES+=("${pb}")
+    printf '%s\tfailed\n' "${pb}" >> "${STATUS_FILE}"
   fi
 done
 
@@ -126,3 +138,33 @@ else
   echo "Nodes that failed: ${FAILED_NODES[*]}"
 fi
 echo "Logs: ${WORK}"
+
+# Machine-readable summary, for CI and anything else that needs to assert on the
+# outcome rather than parse the log.
+if [ -n "${ISOLATION_SUMMARY:-}" ]; then
+  ISO_STATUS_FILE="${STATUS_FILE}" \
+  ISO_ARTIFACTS="${ART}" \
+  ISO_SCENARIO="${SCENARIO}" \
+  ISO_VERDICT="${VERDICT}" \
+  ISO_DEST="${ISOLATION_SUMMARY}" \
+  python3 - <<'SUMMARY'
+import json, os
+
+nodes = {}
+with open(os.environ["ISO_STATUS_FILE"]) as fh:
+    for line in fh:
+        if line.strip():
+            name, status = line.rstrip("\n").split("\t")
+            nodes[name] = status
+
+carried = json.load(open(os.environ["ISO_ARTIFACTS"]))
+json.dump({
+    "scenario": os.environ["ISO_SCENARIO"],
+    "verdict": os.environ["ISO_VERDICT"],
+    "nodes": nodes,
+    "failed_nodes": [k for k, v in nodes.items() if v == "failed"],
+    "artifacts": sorted(carried),
+}, open(os.environ["ISO_DEST"], "w"), indent=2)
+SUMMARY
+  echo "Summary: ${ISOLATION_SUMMARY}"
+fi

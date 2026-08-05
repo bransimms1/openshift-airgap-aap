@@ -103,9 +103,16 @@
     - ansible.controller.workflow_job_template_node:
         <<: *ctl
         workflow: "openshift-site-readiness"
+        identifier: "prepare-hosts"
+        unified_job_template: "30-bmc-prepare-hosts"
+        parents: [{ identifier: "approve-execute", type: success }]
+
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
         identifier: "generate-iso"
         unified_job_template: "31-generate-agent-iso"
-        parents: [{ identifier: "approve-execute", type: success }]
+        parents: [{ identifier: "prepare-hosts", type: success }]
 
     - ansible.controller.workflow_job_template_node:
         <<: *ctl

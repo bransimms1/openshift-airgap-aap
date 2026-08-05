@@ -1,9 +1,29 @@
 ---
-# Post-approval. First playbook in the repo that changes anything.
+# Post-approval. The first playbook in the repository that changes anything.
 - name: Prepare hardware for installation
   hosts: bmc
   gather_facts: false
   tasks:
+
+    # Hard stop, for the same reason as 31 and 32. The approval node is
+    # reachable in demo mode, and approving it must never change the power
+    # state of anything, so this refuses before touching hardware rather than
+    # relying on the node not being approved.
+    - name: DEMO - refuse to change hardware state
+      when: demo_mode | default(false) | bool
+      block:
+        - name: Say so plainly in the job output
+          ansible.builtin.debug:
+            msg: |
+              DEMO MODE - no hardware touched, no power state changed.
+
+              This node exists to show that hardware preparation sits behind
+              the approval gate. In a real run it would gracefully power off
+              each host so that virtual media can be attached to a machine
+              that is not running. In demo mode it stops here.
+
+        - name: End the play
+          ansible.builtin.meta: end_play
 
     - name: Ensure hosts are powered off before media is attached
       community.general.redfish_command:

@@ -12,9 +12,12 @@ Automation Controller and are injected at run time.
   from a bundle or from the tracked tree.
 - In playbooks and inventories, reference credentials as variables
   (`{{ bmc_password }}`), never as literal values.
-- `.gitignore` excludes real `install-config.yaml`, `agent-config.yaml` and
+- `.gitignore` lists real `install-config.yaml`, `agent-config.yaml` and
   `imageset-config.yaml` exports, along with certificates, keys, pull secrets and
-  vault passwords, so they cannot be committed by accident.
+  vault passwords. This reduces the risk of accidentally adding common
+  credential-bearing files; it is not a guarantee, since a file can always be
+  added with `git add -f` or under a name the rules do not cover. CI secret
+  scanning is the enforcement layer for tracked content.
 
 For a disconnected site, also pin and sign the execution environment and record
 its image digest in the readiness report.

@@ -46,11 +46,20 @@
     controller_project: "openshift-airgap-aap"
     controller_inventory_demo: "demo"
     controller_inventory_prod: "site-a"
-    # Always explicit, in both modes. The demo needs an EE that carries
-    # community.crypto and dellemc.openmanage even though those branches skip:
-    # Ansible resolves module names at parse time, before when: is evaluated,
-    # so a default EE without them fails to parse the job. Override this if
-    # your image is named something else.
+    # Always explicit, in both modes.
+    #
+    # Ansible resolves STATICALLY REFERENCED module names at parse time, before
+    # when: is evaluated, so a collection referenced directly in a playbook must
+    # be present even when the branch that uses it skips. community.crypto is
+    # required for that reason: 12-validate-registry references
+    # community.crypto.get_certificate directly.
+    #
+    # dellemc.openmanage is NOT required. Its one task lives in
+    # playbooks/tasks/bmc_dell_bios.yml and is pulled in with include_tasks,
+    # which resolves at run time, so an execution environment without the
+    # collection still parses and runs the workflow.
+    #
+    # Override this if your image is named something else.
     controller_execution_environment: "ee-airgap-readiness"
     common: &common
       organization: "{{ controller_organization }}"
@@ -95,8 +104,8 @@
         credentials: "{{ omit if controller_demo_setup | bool else ['bastion-ssh'] }}"
 
     # Defined so the workflow graph is complete and the approval gate visibly
-    # guards something. Both playbooks refuse to act when demo_mode is true,
-    # so approving during a demo is safe.
+    # guards something. All three playbooks refuse to act when demo_mode is
+    # true, so approving during a demo changes nothing.
     - name: Execution, behind the gate
       ansible.controller.job_template:
         <<: *common
@@ -105,5 +114,6 @@
         credentials: "{{ omit if controller_demo_setup | bool else item.credentials }}"
         job_type: run
       loop:
+        - { name: "30-bmc-prepare-hosts", playbook: "playbooks/30_bmc_prepare_hosts.yml", credentials: ["demo-bmc"] }
         - { name: "31-generate-agent-iso", playbook: "playbooks/31_generate_agent_iso.yml", credentials: ["bastion-ssh", "ocp-pull-secret"] }
         - { name: "32-boot-virtual-media", playbook: "playbooks/32_boot_virtual_media.yml", credentials: ["demo-bmc"] }

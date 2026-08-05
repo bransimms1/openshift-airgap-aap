@@ -9,9 +9,11 @@ Everything executes inside the execution environment against synthetic fixtures
 in `demo/`. Two scenarios are provided: one that reaches the approval gate, and
 one that fails DNS validation and blocks it.
 
-**Demo mode stops at the approval gate.** No ISO is generated, no virtual media is
-attached, no host is powered on. The two playbooks that would do those things
-refuse to act while `demo_mode` is true, so the gate can safely be approved.
+**Demo mode performs no infrastructure changes.** The workflow can be left paused
+at the approval gate, or the gate can be approved to demonstrate the protected
+execution nodes — `30-bmc-prepare-hosts`, `31-generate-agent-iso` and
+`32-boot-virtual-media`. All three detect demo mode and refuse to act, so no host
+is powered off, no ISO is generated and no virtual media is attached either way.
 
 ---
 
@@ -22,9 +24,10 @@ Bundle intake  ->  Bundle validation  ->  6 parallel readiness checks
                                                     |
                                           Readiness report (always)
                                                     |
-                                            Approval gate  [STOP]
+                                            Approval gate
                                                     |
-                                            Execution (refuses in demo mode)
+                                      30 prepare -> 31 ISO -> 32 boot
+                                        (all refuse in demo mode)
 ```
 
 **Approval depends on the report, not on the validation jobs.** The report node
@@ -36,7 +39,7 @@ Three overall verdicts:
 | Verdict | Meaning |
 |---|---|
 | `READY` | Every branch executed against a real environment and passed |
-| `READY_WITH_LIMITATIONS` | Nothing failed, but something was SIMULATED or SKIPPED |
+| `READY_WITH_LIMITATIONS` | Nothing failed, but something was SIMULATED, SKIPPED or UNCONFIRMED |
 | `NOT_READY` | At least one branch failed. The report job fails; the gate is unreachable |
 
 The passing scenario reports **`READY_WITH_LIMITATIONS`**, because NTP, registry,
@@ -50,11 +53,16 @@ VIP and Redfish validation are simulated.
 | `01-validate-bundle` | Every semantic assertion runs for real: VIPs inside `machineNetwork`, no CIDR overlap, unique and syntactically valid MACs, `rendezvousIP` belongs to a control-plane host, `rootDeviceHints` present, trust bundle present. |
 | `10-validate-dns` | Real grading logic against a fixture zone in `demo/dns/`. This is the branch that differs between the two scenarios. |
 | `14-validate-bastion` | Free space measured for real against the execution environment's own filesystem. The client-tool check is simulated, because the fixture bundle carries no `tools/` directory. |
-| `11-validate-ntp`, `12-validate-registry`, `13-validate-vips` | Report **SIMULATED** — no NTP server, registry or VIPs exist to contact. |
+| `11-validate-ntp`, `12-validate-registry`, `13-validate-vips` | Report **SIMULATED** — no NTP server, registry or VIPs exist to contact. Against a real mirror, `12` reports **UNCONFIRMED** when the registry requires authentication and will not enumerate its release tags. |
 | `15-validate-bmc` | Reports **SIMULATED** or **SKIPPED** depending on the survey. Never dials out. |
 
 The report labels each branch with its state, so a `READY_WITH_LIMITATIONS`
-verdict shows exactly which checks were not executed against a real environment.
+verdict shows exactly which checks were not executed against a real environment,
+or ran without being able to confirm their result.
+
+Firmware comparison in `15-validate-bmc` is advisory: it is published as
+`firmware_state` (`MATCH`, `DRIFT`, `UNKNOWN_INSTALLED` or `BASELINE_UNSET`) and
+never blocks BMC readiness.
 
 ---
 
@@ -66,7 +74,7 @@ verdict shows exactly which checks were not executed against a real environment.
 | Project | `openshift-airgap-aap` | Points at this Git repository, branch `main` |
 | Inventory | `demo` | Source: the project, file `inventories/demo/hosts.yml` |
 | Execution environment | `ee-airgap-readiness` | See §4 — **required** |
-| Job templates | `00-bundle-intake`, `01-validate-bundle`, `10`–`15`, `20-readiness-report`, `31-generate-agent-iso`, `32-boot-virtual-media` | Created by `controller/job_templates.yml` |
+| Job templates | `00-bundle-intake`, `01-validate-bundle`, `10`–`15`, `20-readiness-report`, `30-bmc-prepare-hosts`, `31-generate-agent-iso`, `32-boot-virtual-media` | Created by `controller/job_templates.yml` |
 | Workflow | `openshift-site-readiness` | Created by `controller/workflow_templates.yml` |
 
 **No credentials are needed for demo mode.** Everything runs on `localhost` inside
@@ -216,17 +224,19 @@ Relaunch and change one field:
 | `20-readiness-report` | Success. Verdict `READY_WITH_LIMITATIONS` — nothing failed, but NTP, registry, VIPs and BMC were not executed against a real environment |
 | `approve-execute` | Waiting for approval |
 
-The workflow pauses at the approval node, which shows **Approve / Deny**.
-Approving it runs `31-generate-agent-iso` and `32-boot-virtual-media`, which
-refuse to act and report why:
+The workflow pauses at the approval node, which shows **Approve / Deny**. It can
+be left paused, or approved to show the execution nodes. Approving runs
+`30-bmc-prepare-hosts`, `31-generate-agent-iso` and `32-boot-virtual-media`, each
+of which detects demo mode, refuses to act, and reports why:
 
 ```
+DEMO MODE - no hardware touched, no power state changed.
 DEMO MODE - nothing generated.
 DEMO MODE - no virtual media attached, no host powered on.
 ```
 
-In a real run those nodes build the agent ISO and attach it over Redfish, powering
-on the rendezvous host first. They sit *after* the human decision, not before it.
+In a real run those nodes gracefully power off each host, build the agent ISO,
+and attach it over Redfish. They sit *after* the human decision, not before it.
 
 ---
 
@@ -275,6 +285,23 @@ ansible-playbook -i inventories/demo/hosts.yml demo/smoke-test.yml \
 `set_stats` values pass between plays only inside Controller, so the smoke test's
 report shows every branch as SKIPPED. Use the isolation test to check report
 contents.
+
+**Classification tests.** The BMC and registry branches share their grading logic
+with fixture-driven tests, so a change to the rules is exercised without needing
+hardware or a registry:
+
+```bash
+ansible-playbook -i localhost, demo/tests/bmc_classification.yml
+ansible-playbook -i localhost, demo/tests/registry_verdict.yml
+```
+
+**Structured results.** Set `ISOLATION_SUMMARY` to have the isolation harness
+write a JSON summary — per-node status, the verdict, and the artifacts that
+crossed node boundaries. CI asserts against this rather than parsing the log:
+
+```bash
+ISOLATION_SUMMARY=/tmp/result.json demo/node-isolation-test.sh failing_dns
+```
 
 ---
 

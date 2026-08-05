@@ -67,55 +67,10 @@
       failed_when: false
       no_log: true
 
-    # Both reads above use failed_when: false so that an unreachable BMC still
-    # reaches the set_stats below. Because failures are suppressed, _sys.failed
-    # cannot distinguish a failure from a success, so reachability is determined
-    # from the returned system record instead.
-    #
-    # An empty dict is still a mapping, so reject('eq', {}) is required: a BMC
-    # exposing several systems - a blade chassis, or an unpopulated slot - can
-    # return an empty first record ahead of a populated one.
-    - name: Derive the system record Redfish returned, if any
-      ansible.builtin.set_fact:
-        _bmc_system: >-
-          {{ (_sys.redfish_facts.system.entries | default([]))
-             | map('last') | select('mapping') | reject('eq', {})
-             | first | default({}, true) }}
-
-    - name: Derive whether the BMC answered with usable system data
-      ansible.builtin.set_fact:
-        # Missing entries, an empty list, or a record with nothing in it all
-        # mean the same thing operationally: nothing can prepare, boot or
-        # verify this host.
-        _bmc_reachable: "{{ _bmc_system is mapping and _bmc_system | length > 0 }}"
-
-    - name: Derive the BIOS firmware records the BMC reported
-      ansible.builtin.set_fact:
-        # Derived before set_stats so the drift finding is published. The
-        # assertion further down runs afterwards and is non-blocking; it exists
-        # to surface the finding in the job output.
-        _bmc_bios_entries: >-
-          {{ (_fw.redfish_facts.firmware.entries | default([]))
-             | selectattr('Name', 'defined') | selectattr('Name', 'search', 'BIOS')
-             | selectattr('Version', 'defined') | list }}
-        # An inventory that declares no baseline is a configuration gap, not a
-        # reason to lose the branch. Defaulting keeps set_stats resolvable so the
-        # report still receives a verdict for this host.
-        _bmc_bios_expected: "{{ (firmware_baseline | default({})).bios_version | default('unset') }}"
-
-    # Dell reports the running and the rollback image under the same Name,
-    # "BIOS", distinguished only by Id (Installed-159-2.15.1 vs
-    # Previous-159-2.14.0). Prefer a record that does not identify itself as a
-    # previous image; fall back to records that carry no Id.
-    - name: Derive the installed BIOS version
-      ansible.builtin.set_fact:
-        _bmc_bios_installed: >-
-          {{ (_bmc_bios_entries | selectattr('Id', 'defined')
-              | rejectattr('Id', 'search', '(?i)^(previous|rollback|backup)')
-              | map(attribute='Version') | first)
-             | default((_bmc_bios_entries | rejectattr('Id', 'defined')
-               | map(attribute='Version') | first), true)
-             | default('unknown', true) }}
+    # Classification lives in tasks/bmc_classify.yml so the same expressions can
+    # be graded against fixture data by demo/tests/bmc_classification.yml.
+    - name: Classify the Redfish read
+      ansible.builtin.include_tasks: tasks/bmc_classify.yml
 
     - name: Report system state
       ansible.builtin.debug:
@@ -144,26 +99,26 @@
             # Dell BIOS ATTRIBUTE drift from tasks/bmc_dell_bios.yml. This is
             # distinct from firmware version drift, published below.
             bios_drift: "{{ _bios.changed | default(false) }}"
-            # Firmware VERSION drift, reported but never blocking. Drift is only
-            # claimed when BOTH sides are known: 'unknown' installed means the
-            # BMC exposed no BIOS firmware entry, and 'unset' expected means the
-            # inventory declares no baseline. Either is worth recording, and
-            # neither is the same as "no drift" - which is why both values are
-            # published alongside this flag rather than folded into it.
-            firmware_drift: >-
-              {{ _bmc_bios_installed != 'unknown'
-                 and _bmc_bios_expected != 'unset'
-                 and _bmc_bios_installed != _bmc_bios_expected }}
+            # Firmware comparison is advisory and never blocks BMC readiness.
+            # firmware_state is the truthful field: it distinguishes a genuine
+            # match from a comparison that could not be made. firmware_drift is
+            # retained for consumers that already read it, and is true only for
+            # a confirmed DRIFT.
+            firmware_state: "{{ _bmc_firmware_state }}"
+            firmware_drift: "{{ _bmc_firmware_state == 'DRIFT' }}"
             bios_version_installed: "{{ _bmc_bios_installed }}"
             bios_version_expected: "{{ _bmc_bios_expected }}"
             reachable: "{{ _bmc_reachable }}"
+            detail: "{{ _bmc_unusable_why }}"
 
-    - name: BMC must be reachable over Redfish
+    - name: BMC must return usable system data over Redfish
       ansible.builtin.fail:
         msg: >-
-          {{ node_name }} did not answer over Redfish at {{ bmc_address }} with
-          usable system data.
-          Nothing can prepare, boot or verify this host until it does.
+          {{ node_name }} did not return usable system data over Redfish at
+          {{ bmc_address }}: {{ _bmc_unusable_why }}.
+          A usable record needs an identifier and a PowerState, and must not be
+          a Redfish error body. Nothing can prepare, boot or verify this host
+          until it does.
       when: not _bmc_reachable
 
     # Firmware drift is reported, not blocked: flashing during an install window
@@ -171,7 +126,7 @@
     # published above; this assertion surfaces it in the job output.
     - name: Firmware must match the approved baseline  # noqa: ignore-errors
       ansible.builtin.assert:
-        that: _bmc_bios_installed == _bmc_bios_expected
+        that: _bmc_firmware_state in ['MATCH', 'UNKNOWN_INSTALLED', 'BASELINE_UNSET']
         fail_msg: >-
           {{ node_name }} BIOS drift. Approved {{ _bmc_bios_expected }},
           installed {{ _bmc_bios_installed }}.

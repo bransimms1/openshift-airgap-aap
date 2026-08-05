@@ -14,6 +14,7 @@
  .fail{color:#ee0000;font-weight:bold}
  .simulated{color:#9a6b00;font-weight:bold}
  .skipped{color:#5a5a5a;font-weight:bold}
+ .unconfirmed{color:#9a6b00;font-weight:bold}
  .not-ready{color:#ee0000;font-weight:bold}
  .ready{color:#2e6b36;font-weight:bold}
  .ready-with-limitations{color:#9a6b00;font-weight:bold}
@@ -105,7 +106,8 @@ in this bundle - the export had unresolved warnings.</div>
 <tr><td>Mirror registry</td>
     <td class="{{ report.checks.registry.status | default('SKIPPED') | lower }}">{{ report.checks.registry.status | default('SKIPPED') }}</td>
     <td><code>{{ report.checks.registry.hosts | default([]) | join(', ') }}</code>
-    &middot; certificate expires {{ report.checks.registry.cert_expires | default('n/a') }}</td></tr>
+    &middot; certificate expires {{ report.checks.registry.cert_expires | default('n/a') }}
+    &middot; release payload {{ report.checks.registry.release_payload_state | default('n/a') }}</td></tr>
 <tr><td>VIPs probed (must be free)</td>
     <td class="{{ report.checks.vips.status | default('SKIPPED') | lower }}">{{ report.checks.vips.status | default('SKIPPED') }}</td>
     <td><code>{{ report.checks.vips.probed | default([]) | join(', ') }}</code>
@@ -119,7 +121,7 @@ in this bundle - the export had unresolved warnings.</div>
     <td class="{{ report.checks.bmc.status | default('SKIPPED') | lower }}">{{ report.checks.bmc.status | default('SKIPPED') }}</td>
     <td>{{ report.checks.bmc.detail | default('power ' ~ (report.checks.bmc.power | default('n/a'))
       ~ ' &middot; BIOS config drift ' ~ (report.checks.bmc.bios_drift | default('n/a'))
-      ~ ' &middot; firmware drift ' ~ (report.checks.bmc.firmware_drift | default('n/a'))
+      ~ ' &middot; firmware ' ~ (report.checks.bmc.firmware_state | default('n/a'))
       ~ ' (installed ' ~ (report.checks.bmc.bios_version_installed | default('n/a'))
       ~ ', approved ' ~ (report.checks.bmc.bios_version_expected | default('n/a')) ~ ')') }}</td></tr>
 </table>

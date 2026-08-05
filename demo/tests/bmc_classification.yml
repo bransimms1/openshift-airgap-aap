@@ -1,0 +1,189 @@
+---
+# Fixture-driven tests for playbooks/tasks/bmc_classify.yml.
+#
+# The playbook and these tests include the SAME task file, so a change to the
+# classification rules is graded here rather than only in production.
+#
+#   ansible-playbook -i localhost, demo/tests/bmc_classification.yml
+- name: BMC classification
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cases:
+      - name: no redfish_facts at all (suppressed connection failure)
+        sys: {failed: true, msg: "connection refused"}
+        fw: {failed: true}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: empty entries list
+        sys: {redfish_facts: {system: {entries: []}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: error-only mapping must not pass
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"},
+                   {error: {code: "Base.1.0.GeneralError", message: "A general error has occurred"}}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      # A degraded response that carries an error alongside otherwise-valid
+      # fields. Without an explicit error rejection this reads as a healthy
+      # system, because it has both an identifier and a PowerState.
+      - name: error alongside valid fields must still be rejected
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"},
+                   {error: {code: "Base.1.0.GeneralError"}, Id: "System.Embedded.1", PowerState: "On"}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: metadata-only mapping must not pass (no identifier, no PowerState)
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"}, {Model: "PowerEdge R650"}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: identifier present but no PowerState must not pass
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"}, {Id: "System.Embedded.1", Model: "R650"}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: valid system record
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"},
+                   {Id: "System.Embedded.1", PowerState: "On", Model: "R650"}]
+        fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.15.1"}]}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: MATCH
+
+      - name: empty first record followed by a valid one
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"}, {}]
+                - [{system_uri: "/redfish/v1/Systems/2"},
+                   {Id: "System.Embedded.2", PowerState: "Off", Model: "R650"}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "Off"
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: error record followed by a valid one
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"}, {error: {code: "Base.1.0.GeneralError"}}]
+                - [{system_uri: "/redfish/v1/Systems/2"},
+                   {Id: "System.Embedded.2", PowerState: "On"}]
+        fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: DRIFT
+
+      - name: multiple valid records selects the first deterministically
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/redfish/v1/Systems/1"},
+                   {Id: "System.Embedded.1", PowerState: "On", Model: "first"}]
+                - [{system_uri: "/redfish/v1/Systems/2"},
+                   {Id: "System.Embedded.2", PowerState: "Off", Model: "second"}]
+        fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.15.1"}]}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        model: first
+        firmware_state: MATCH
+
+      - name: Dell dual-BIOS selects the installed image, not the rollback
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/x"}, {Id: "System.Embedded.1", PowerState: "On"}]
+        fw:
+          redfish_facts:
+            firmware:
+              entries:
+                - {Name: "BIOS", Id: "Previous-159-2.14.0", Version: "2.14.0"}
+                - {Name: "BIOS", Id: "Installed-159-2.15.1", Version: "2.15.1"}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        bios_installed: "2.15.1"
+        firmware_state: MATCH
+
+      - name: no baseline declared is BASELINE_UNSET, not "no drift"
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/x"}, {Id: "System.Embedded.1", PowerState: "On"}]
+        fw: {redfish_facts: {firmware: {entries: [{Name: "BIOS", Version: "2.14.0"}]}}}
+        baseline: {}
+        reachable: true
+        bios_installed: "2.14.0"
+        firmware_state: BASELINE_UNSET
+
+      - name: identifier via SerialNumber rather than Id
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{system_uri: "/x"}, {SerialNumber: "CN7016", PowerState: "On"}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+  tasks:
+
+    - name: Grade every fixture through the shipped classification
+      ansible.builtin.include_tasks: bmc_case.yml
+      vars:
+        _sys: "{{ case.sys }}"
+        _fw: "{{ case.fw }}"
+        firmware_baseline: "{{ case.baseline }}"
+      loop: "{{ cases }}"
+      loop_control:
+        loop_var: case
+        label: "{{ case.name }}"
+
+    - name: Report the number of cases graded
+      ansible.builtin.debug:
+        msg: "{{ cases | length }} BMC classification cases passed."

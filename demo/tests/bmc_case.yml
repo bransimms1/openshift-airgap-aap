@@ -1,0 +1,28 @@
+---
+# One fixture case: classify it with the shipped logic, then assert the result.
+# Included once per case by demo/tests/bmc_classification.yml.
+
+- name: Classify the fixture with the shipped rules
+  ansible.builtin.include_tasks: ../../playbooks/tasks/bmc_classify.yml
+
+- name: Assert the classification for this case
+  ansible.builtin.assert:
+    that:
+      - (_bmc_reachable | bool) == (case.reachable | bool)
+      - _bmc_firmware_state == case.firmware_state
+      - case.power is not defined or _bmc_system.PowerState == case.power
+      - case.model is not defined or _bmc_system.Model == case.model
+      - case.bios_installed is not defined or _bmc_bios_installed == case.bios_installed
+      # An unusable read must never publish a system record.
+      - (_bmc_reachable | bool) or (_bmc_system | length == 0)
+      # A usable read must always carry the fields the workflow needs.
+      - not (_bmc_reachable | bool) or _bmc_system.PowerState is defined
+    success_msg: >-
+      ok: {{ case.name }}
+      [reachable={{ _bmc_reachable }} firmware={{ _bmc_firmware_state }}
+       installed={{ _bmc_bios_installed }} why={{ _bmc_unusable_why }}]
+    fail_msg: >-
+      FAILED: {{ case.name }}
+      [reachable={{ _bmc_reachable }} (wanted {{ case.reachable }})
+       firmware={{ _bmc_firmware_state }} (wanted {{ case.firmware_state }})
+       installed={{ _bmc_bios_installed }}]

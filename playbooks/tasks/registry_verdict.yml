@@ -1,0 +1,46 @@
+---
+# Grade a mirror-registry probe into a readiness verdict.
+#
+# In its own file so demo/tests/registry_verdict.yml can grade the same
+# expressions against fixture data.
+#
+# Inputs, set by the caller:
+#   _reg              registered uri result, looped over mirror_hosts
+#   _cert             registered get_certificate result
+#   _payload          registered uri result for the release tags list
+#
+# Outputs:
+#   _unreachable_hosts  hosts that did not answer on /v2/
+#   _cert_ok            bool: a certificate was actually read
+#   _payload_state      CONFIRMED | UNCONFIRMED | MISSING
+#   _registry_status    PASS | UNCONFIRMED | FAIL
+
+- name: Derive the registry verdicts
+  ansible.builtin.set_fact:
+    _unreachable_hosts: >-
+      {{ _reg.results | rejectattr('status', 'in', [200, 401])
+         | map(attribute='item') | list }}
+    # get_certificate runs with failed_when: false so its result reaches
+    # set_stats. An absent not_after is the only reliable sign that no
+    # certificate came back.
+    _cert_ok: "{{ _cert.not_after is defined and _cert.not_after | length > 0 }}"
+    # 200 is the only response that confirms the release repository exists.
+    # 401 proves routing and TLS work and that the endpoint is there, but the
+    # tag list is not enumerable without credentials, so payload existence is
+    # neither confirmed nor disproved. 404 and anything else mean it is not
+    # published where the cluster will look for it.
+    _payload_state: >-
+      {{ 'CONFIRMED' if (_payload.status | default(0)) == 200
+         else ('UNCONFIRMED' if (_payload.status | default(0)) == 401 else 'MISSING') }}
+
+# UNCONFIRMED is not PASS. The readiness report grades it alongside SIMULATED
+# and SKIPPED, so an authenticated mirror yields READY_WITH_LIMITATIONS rather
+# than full readiness - the environment may well be correct, but this run did
+# not prove it.
+- name: Derive the overall registry status
+  ansible.builtin.set_fact:
+    _registry_status: >-
+      {{ 'FAIL' if (_unreachable_hosts | length > 0
+                    or not (_cert_ok | bool)
+                    or _payload_state == 'MISSING')
+         else ('UNCONFIRMED' if _payload_state == 'UNCONFIRMED' else 'PASS') }}

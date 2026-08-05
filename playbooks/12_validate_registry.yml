@@ -6,7 +6,9 @@
   hosts: validators
   gather_facts: false
   vars:
-    registry_port: 8443
+    # Fallback only. The port actually checked is parsed from the mirror host
+    # below, so a mirror published on 443 is not probed on 8443.
+    registry_port_default: 8443
     # This node's own scratch space. It does not read anything the intake node
     # wrote: trust_bundle arrives as a workflow artifact and is written out
     # here, in this pod, immediately before it is used.
@@ -27,8 +29,10 @@
                 detail: >-
                   Demo mode. In production this fetches /v2/ over TLS validated
                   by the bundle's own additionalTrustBundle, reads the
-                  certificate the registry actually presents, and confirms the
-                  release payload for this version exists in the mirror.
+                  certificate the registry actually presents, and probes for the
+                  release payload. A mirror that requires authentication returns
+                  401, which leaves payload presence UNCONFIRMED rather than
+                  verified.
         - name: End the play
           ansible.builtin.meta: end_play
 
@@ -54,10 +58,21 @@
       register: _reg
       failed_when: false
 
+    # mirror_hosts entries may or may not carry an explicit port. Parse it, and
+    # fall back only when the host does not specify one, so the certificate is
+    # read from the same endpoint the /v2/ probe used.
+    - name: Determine the host and port to read the certificate from
+      ansible.builtin.set_fact:
+        _registry_hostname: "{{ mirror_hosts[0] | split(':') | first }}"
+        _registry_port: >-
+          {{ (mirror_hosts[0] | split(':') | last)
+             if (mirror_hosts[0] | split(':') | length) > 1
+             else (registry_port | default(registry_port_default)) }}
+
     - name: Read the certificate the registry actually presents
       community.crypto.get_certificate:
-        host: "{{ mirror_hosts[0] | split(':') | first }}"
-        port: "{{ registry_port }}"
+        host: "{{ _registry_hostname }}"
+        port: "{{ _registry_port }}"
       register: _cert
       failed_when: false
 
@@ -72,34 +87,34 @@
       register: _payload
       failed_when: false
 
-    # One boolean per validated property, derived before publication so the
-    # published result and the failure condition cannot disagree.
-    - name: Derive the three verdicts this play claims to produce
-      ansible.builtin.set_fact:
-        _unreachable_hosts: "{{ _reg.results | rejectattr('status', 'in', [200, 401]) | map(attribute='item') | list }}"
-        # get_certificate runs with failed_when: false so its result reaches
-        # set_stats. An absent not_after is the only reliable sign it did not
-        # come back with a certificate.
-        _cert_ok: "{{ _cert.not_after is defined and _cert.not_after | length > 0 }}"
-        # 401 means the endpoint exists and TLS and routing work, but the tag
-        # list is not enumerable without credentials - existence is not confirmed
-        # and not disproved. Treated as "could not confirm" rather than FAIL, so
-        # an authenticated mirror does not fail readiness for being authenticated.
-        _payload_ok: "{{ _payload.status | default(0) in [200, 401] }}"
+    # Grading lives in tasks/registry_verdict.yml so the same expressions can be
+    # exercised against fixture data by demo/tests/registry_verdict.yml.
+    - name: Grade the probe results
+      ansible.builtin.include_tasks: tasks/registry_verdict.yml
 
     - name: Publish result
       ansible.builtin.set_stats:
         data:
           check_registry:
-            status: "{{ 'PASS' if (_unreachable_hosts | length == 0 and _cert_ok and _payload_ok) else 'FAIL' }}"
+            status: "{{ _registry_status }}"
             hosts: "{{ mirror_hosts }}"
             unreachable: "{{ _unreachable_hosts }}"
+            cert_host: "{{ _registry_hostname }}:{{ _registry_port }}"
             cert_expires: "{{ _cert.not_after | default('unknown') }}"
             cert_retrieved: "{{ _cert_ok }}"
             release_probe: "{{ _payload.status | default('n/a') }}"
-            release_payload_present: "{{ _payload.status | default(0) == 200 }}"
+            # CONFIRMED only on 200. UNCONFIRMED means the endpoint requires
+            # authentication, so this run neither proved nor disproved that the
+            # release payload is present.
+            release_payload_state: "{{ _payload_state }}"
+            detail: >-
+              {{ 'Release payload confirmed present.' if _payload_state == 'CONFIRMED'
+                 else ('Release payload presence UNCONFIRMED: the tag list requires
+                        authentication, so this check did not verify release content.'
+                       if _payload_state == 'UNCONFIRMED'
+                       else 'Release payload not found in the mirror.') }}"
 
-    - name: Assert reachability, trust and content together
+    - name: Fail on unreachable hosts, unreadable trust, or a missing payload
       ansible.builtin.fail:
         msg: >-
           {% if _unreachable_hosts | length > 0 %}
@@ -109,13 +124,13 @@
           every image pull with x509 errors after install.
           {% endif %}
           {% if not _cert_ok %}
-          No certificate could be read from {{ mirror_hosts[0] | split(':') | first }}:{{ registry_port }}.
+          No certificate could be read from {{ _registry_hostname }}:{{ _registry_port }}.
           The trust chain cannot be verified, so nothing here proves the cluster
           will accept what the registry presents.
           {% endif %}
-          {% if not _payload_ok %}
+          {% if _payload_state == 'MISSING' %}
           The release payload probe returned {{ _payload.status | default('no response') }}.
           The release repository is not in the mirror - oc-mirror did not publish
           it, or it was published under a different path.
           {% endif %}
-      when: _unreachable_hosts | length > 0 or not _cert_ok or not _payload_ok
+      when: _registry_status == 'FAIL'

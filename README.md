@@ -27,8 +27,8 @@ that becomes reachable only when validation passes.
 |---|---|---|
 | Intake | `00`, `01` | Fetch and digest the bundle, gate on the draft marker, validate the configuration semantically |
 | Readiness | `10`–`15` | DNS, NTP, mirror registry, VIPs, bastion, out-of-band hardware — all read-only |
-| Evidence | `20` | Readiness report, published as a workflow artifact and rendered as HTML and JSON |
-| Execution | `30`–`32` | Hardware preparation, agent ISO generation, virtual-media boot |
+| Evidence | `20` | Readiness report, published as a workflow artifact and rendered as HTML and JSON in the job's working directory |
+| Execution | `30`–`32` | Hardware preparation, agent ISO generation, virtual-media boot. All three refuse to act in demo mode |
 | Day 2 | `50` | Install Argo CD and hand in-cluster desired state to GitOps |
 
 It does **not** generate cluster configuration, mirror images, or reconcile
@@ -60,7 +60,7 @@ consumes what that role publishes through `set_stats`:
                        ┌──────────┴──────────┐
                        │   approval gate     │
                        └──────────┬──────────┘
-                            30 → 31 → 32
+                    30 prepare → 31 ISO → 32 boot
 ```
 
 Two properties are load-bearing:
@@ -170,13 +170,89 @@ ansible-builder build --container-runtime podman \
 # is certified content from Automation Hub and is not installed by the line above.
 ansible-galaxy collection install -r controller/requirements.yml
 
-# Read-only assessment
-ansible-navigator run playbooks/00_bundle_intake.yml -i inventories/site-a/hosts.yml
-ansible-navigator run playbooks/10_validate_dns.yml  -i inventories/site-a/hosts.yml
+# Run the whole readiness chain locally against the demo fixtures. Each node
+# runs as a separate process carrying artifacts forward, the way Automation
+# Controller executes the workflow.
+demo/node-isolation-test.sh passing
 ```
 
-In Automation Controller, apply `controller/` with the `ansible.controller`
-collection and launch the `openshift-site-readiness` workflow.
+### Running a readiness playbook on its own
+
+The readiness playbooks consume facts published by `00_bundle_intake.yml`
+through `set_stats`. **Workflow artifacts do not cross `ansible-playbook`
+process boundaries**, so running two playbooks as two separate local commands
+does not carry `cluster_fqdn`, `expected_dns` or anything else between them.
+
+Three supported ways to run them:
+
+| Method | Use when |
+|---|---|
+| The `openshift-site-readiness` workflow in Automation Controller | Production. Controller passes artifacts between nodes |
+| `demo/node-isolation-test.sh <scenario>` | Locally, for the full chain. Reproduces Controller's artifact passing |
+| A single `ansible-playbook` run with the required variables supplied | Locally, for one branch |
+
+For the third, supply the facts the branch needs as extra vars. For
+`10_validate_dns`:
+
+```bash
+ansible-playbook -i inventories/site-a/hosts.yml playbooks/10_validate_dns.yml \
+  -e cluster_fqdn=ocp.example.com \
+  -e '{"expected_dns": [{"name": "api.ocp.example.com", "expect": ["10.42.10.5"], "why": "API VIP"}]}' \
+  -e '{"dns_servers": ["10.42.10.53"]}'
+```
+
+`roles/airgap_bundle_facts/tasks/main.yml` lists everything published; the
+readiness branch you are running names what it reads. Alternatively, include the
+role at the top of your own play so the facts are derived in the same process.
+
+### In Automation Controller
+
+Apply `controller/` with the `ansible.controller` collection and launch the
+`openshift-site-readiness` workflow. See **Controller-as-code prerequisites**
+below — the definitions expect several objects to exist already.
+
+## Controller-as-code prerequisites
+
+`controller/` defines job templates, the workflow, the survey, a custom
+credential type and notifications. It does **not** create the objects those
+definitions reference. Create these first, with these names, or override the
+variables shown.
+
+| Prerequisite | Default name | Override |
+|---|---|---|
+| Organization | `Platform Engineering` | `-e controller_organization=...` |
+| Project, Git-backed, pointing at this repository | `openshift-airgap-aap` | `-e controller_project=...` |
+| Inventory — demo | `demo`, sourced from the project, file `inventories/demo/hosts.yml` | `-e controller_inventory_demo=...` |
+| Inventory — production | `site-a`, sourced from the project or your own source | `-e controller_inventory_prod=...` |
+| Execution environment | `ee-airgap-readiness` | `-e controller_execution_environment=...` |
+| Credential to apply this with | A *Red Hat Ansible Automation Platform* credential pointing at the same controller | see below |
+| `ansible.controller` collection | `ansible-galaxy collection install -r controller/requirements.yml` | — |
+
+Production mode additionally expects these credentials to exist, because the job
+templates attach them by name: `bastion-ssh`, `mirror-registry`, `demo-bmc`
+(the BMC credential, created from the custom type in
+`controller/credential_types/`), and `ocp-pull-secret`.
+
+```bash
+# Demo mode - the current default. No credentials are attached, so this works
+# on a fresh controller with no site secrets in existence yet.
+ansible-playbook controller/credential_types/bmc_redfish.yml
+ansible-playbook controller/job_templates.yml      -e controller_demo_setup=true
+ansible-playbook controller/workflow_templates.yml -e controller_demo_setup=true
+
+# Production - attaches the credentials named above and defaults to site-a.
+ansible-playbook controller/job_templates.yml      -e controller_demo_setup=false
+ansible-playbook controller/workflow_templates.yml -e controller_demo_setup=false
+```
+
+`controller_demo_setup` defaults to **`true`**. Pass `false` explicitly for a
+real site.
+
+The most reliable way to apply this against AAP 2.6 is from inside AAP itself:
+create one job template by hand running `controller/job_templates.yml` with the
+AAP credential attached, and run it. `ansible.controller` then reads the host and
+token from the environment and no token is passed as an extra variable. Applying
+from a workstation instead needs `-e controller_hostname=... -e controller_token=...`.
 
 ## Demo mode
 
@@ -204,6 +280,13 @@ while `demo_mode` is true.
   `controller/credential_types/`; every task that touches them sets `no_log: true`.
 - **Pin and sign the execution environment.** Record its image digest in the
   readiness report — the template already carries the field.
+- **Decide where evidence is retained.** The structured `readiness_report`
+  artifact is retained by Automation Controller with the workflow job, and is
+  what downstream nodes and the audit trail consume. The HTML and JSON files
+  that `20_readiness_report` renders are written inside the execution pod and
+  are **ephemeral** — this repository does not upload them to object storage, a
+  PVC or an artifact repository. If you need durable rendered reports, add that
+  step; nothing here provides it.
 - **Use automation mesh rather than SSH across network boundaries.** Place
   execution nodes inside the isolated segment and reach them through hop nodes.
 - **Do not run the AAP that builds a cluster on that cluster.** The dependency
