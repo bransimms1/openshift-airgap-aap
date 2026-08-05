@@ -113,8 +113,8 @@
       This job fails deliberately, which makes the approval gate unreachable.
       Nothing downstream can run until the environment is fixed and revalidated.
       {% elif report.overall == 'READY_WITH_LIMITATIONS' %}
-      Nothing failed, but these were not executed against a real environment,
-      or could not confirm their result:
+      Nothing failed, but one or more checks were simulated, skipped, or could
+      not confirm their result:
         {{ report.not_executed | join(', ') }}
       Approval is available. The approver is accepting those limitations.
       {% else %}

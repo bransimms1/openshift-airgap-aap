@@ -47,9 +47,9 @@ environment, and no installation media was generated.</div>
 &mdash; failed: {{ report.failed_checks | join(', ') }}. The readiness report
 job fails deliberately, which makes the approval gate unreachable.
 {% elif report.overall == 'READY_WITH_LIMITATIONS' %}
-&mdash; nothing failed, but these were not executed against a real
-environment: {{ report.not_executed | join(', ') }}. Approval is available;
-the approver is accepting those limitations.
+&mdash; nothing failed, but one or more checks were simulated, skipped, or
+could not confirm their result: {{ report.not_executed | join(', ') }}.
+Approval is available; the approver is accepting those limitations.
 {% else %}
 &mdash; every branch executed against a real environment and passed.
 {% endif %}

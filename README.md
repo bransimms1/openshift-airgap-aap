@@ -225,7 +225,7 @@ variables shown.
 | Inventory — demo | `demo`, sourced from the project, file `inventories/demo/hosts.yml` | `-e controller_inventory_demo=...` |
 | Inventory — production | `site-a`, sourced from the project or your own source | `-e controller_inventory_prod=...` |
 | Execution environment | `ee-airgap-readiness` | `-e controller_execution_environment=...` |
-| Credential to apply this with | A *Red Hat Ansible Automation Platform* credential pointing at the same controller | see below |
+| Credential to apply this with | A *Red Hat Ansible Automation Platform* credential, or an OAuth token passed as `controller_token` | see below |
 | `ansible.controller` collection | `ansible-galaxy collection install -r controller/requirements.yml` | — |
 
 Production mode additionally expects these credentials to exist, because the job
@@ -233,26 +233,57 @@ templates attach them by name: `bastion-ssh`, `mirror-registry`, `demo-bmc`
 (the BMC credential, created from the custom type in
 `controller/credential_types/`), and `ocp-pull-secret`.
 
+### From a workstation
+
+Every controller playbook needs the connection details, because nothing is
+injecting them. Pass them to each one:
+
 ```bash
+export CONTROLLER_HOST=https://aap.apps.example.com
+export CONTROLLER_TOKEN=...        # an OAuth token for that controller
+
 # Demo mode - the current default. No credentials are attached, so this works
 # on a fresh controller with no site secrets in existence yet.
-ansible-playbook controller/credential_types/bmc_redfish.yml
-ansible-playbook controller/job_templates.yml      -e controller_demo_setup=true
-ansible-playbook controller/workflow_templates.yml -e controller_demo_setup=true
+ansible-playbook controller/credential_types/bmc_redfish.yml \
+  -e controller_hostname="$CONTROLLER_HOST" -e controller_token="$CONTROLLER_TOKEN"
 
-# Production - attaches the credentials named above and defaults to site-a.
-ansible-playbook controller/job_templates.yml      -e controller_demo_setup=false
-ansible-playbook controller/workflow_templates.yml -e controller_demo_setup=false
+ansible-playbook controller/job_templates.yml \
+  -e controller_hostname="$CONTROLLER_HOST" -e controller_token="$CONTROLLER_TOKEN" \
+  -e controller_demo_setup=true
+
+ansible-playbook controller/workflow_templates.yml \
+  -e controller_hostname="$CONTROLLER_HOST" -e controller_token="$CONTROLLER_TOKEN" \
+  -e controller_demo_setup=true
 ```
+
+For a real site, pass `-e controller_demo_setup=false` to the last two. That
+attaches the credentials named above and defaults the inventory to `site-a`.
+
+### From inside AAP
+
+The more reliable route on AAP 2.6. Create one job template by hand running
+`controller/job_templates.yml`, with a **Red Hat Ansible Automation Platform**
+credential pointing at the same controller, and run it. That credential injects
+the host and token, so `controller_hostname` and `controller_token` are not
+needed — only `-e controller_demo_setup=true|false`.
+
+### Notifications are optional
+
+`controller/notifications.yml` is **not** part of the standard bootstrap. The
+workflow is fully functional without it. Apply it only if you want notifications
+on error and on approval, and supply your own webhook endpoint:
+
+```bash
+ansible-playbook controller/notifications.yml \
+  -e controller_hostname="$CONTROLLER_HOST" -e controller_token="$CONTROLLER_TOKEN" \
+  -e controller_notification_url="https://chat.example.com/hooks/your-hook"
+```
+
+It refuses to run without a URL rather than posting somewhere unintended, and it
+honours `controller_organization` like the other playbooks.
 
 `controller_demo_setup` defaults to **`true`**. Pass `false` explicitly for a
 real site.
-
-The most reliable way to apply this against AAP 2.6 is from inside AAP itself:
-create one job template by hand running `controller/job_templates.yml` with the
-AAP credential attached, and run it. `ansible.controller` then reads the host and
-token from the environment and no token is passed as an extra variable. Applying
-from a workstation instead needs `-e controller_hostname=... -e controller_token=...`.
 
 ## Demo mode
 

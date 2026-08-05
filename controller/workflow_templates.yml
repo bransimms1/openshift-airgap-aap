@@ -82,7 +82,7 @@
     # verdict is NOT_READY: the success edge below is then never taken and the
     # gate is unreachable. A verdict of READY or READY_WITH_LIMITATIONS lets
     # the report succeed and the approver sees the report - including anything
-    # that was SIMULATED or SKIPPED - before deciding.
+    # that was SIMULATED, SKIPPED or UNCONFIRMED - before deciding.
     - ansible.controller.workflow_job_template_node:
         <<: *ctl
         workflow: "openshift-site-readiness"
@@ -91,10 +91,14 @@
           name: "Authorise execution"
           description: >-
             The readiness report has been produced and the environment is READY
-            or READY_WITH_LIMITATIONS. Review the report before approving:
-            anything listed as SIMULATED or SKIPPED was not verified against a
-            real environment. Approving permits ISO generation and virtual-media
-            boot against the hosts in the selected inventory.
+            or READY_WITH_LIMITATIONS. Review the report before approving.
+            Approving accepts every limitation it lists: checks marked SIMULATED
+            or SKIPPED were not executed against a real environment, and checks
+            marked UNCONFIRMED ran against the real environment but could not
+            positively confirm their result - an authenticated mirror registry
+            that will not enumerate its release tags, for example. Approving
+            permits hardware preparation, ISO generation and virtual-media boot
+            against the hosts in the selected inventory.
           timeout: 3600
         parents:
           - { identifier: "readiness-report", type: success }

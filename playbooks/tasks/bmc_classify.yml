@@ -21,20 +21,29 @@
 # The reads run with failed_when: false so an unreachable BMC still reaches
 # set_stats. _sys.failed is therefore not a usable signal - a suppressed
 # failure and a success look identical through it. Judge the returned data.
+#
+# Entries are (uri, record) pairs. Anything that is not a non-empty sequence of
+# that shape is discarded here rather than crashing a filter further down: a
+# malformed entry is a reason to report the BMC unusable, not to lose the run.
 - name: Collect every system record the BMC returned
   ansible.builtin.set_fact:
     # Identifiers GetSystemInventory can return. Override bmc_identifier_keys
     # if a vendor exposes something else stable.
     _bmc_default_identifier_keys: ['Id', 'UUID', 'SerialNumber', 'ServiceTag', 'SKU']
+    # Redfish PowerState enumeration. Override bmc_power_states for a vendor
+    # that reports something outside it.
+    _bmc_default_power_states: ['On', 'Off', 'PoweringOn', 'PoweringOff', 'Paused']
     _bmc_candidates: >-
       {{ (_sys.redfish_facts.system.entries | default([]))
-         | map('last') | select('mapping') | list }}
+         | select('sequence') | reject('string') | reject('mapping')
+         | select('truthy') | map('last') | select('mapping') | list }}
     _bmc_usable: []
 
-# A record is usable only if the downstream workflow could act on it: an
-# identifier to name the machine, and a PowerState to reason about. A Redfish
-# error body is also a non-empty mapping and would otherwise read as a healthy
-# system, so it is rejected explicitly.
+# A record is usable only if the downstream workflow could act on it, and that
+# means VALUES, not just keys. `Id` present but null, or PowerState present but
+# an empty string, describes nothing the workflow can name or reason about.
+# A Redfish error body is also a non-empty mapping and would otherwise read as
+# a healthy system, so it is rejected explicitly.
 - name: Keep only the records the workflow could act on
   ansible.builtin.set_fact:
     _bmc_usable: "{{ _bmc_usable + [item] }}"
@@ -43,9 +52,13 @@
     label: "{{ item.Id | default(item.SerialNumber) | default('unidentified') }}"
   when:
     - item.error is not defined
-    - item.PowerState is defined
+    # At least one identifier key whose value survives null/blank normalisation.
     - (bmc_identifier_keys | default(_bmc_default_identifier_keys)
-         | select('in', item) | list | length) > 0
+       | select('in', item) | map('extract', item) | reject('none')
+       | map('string') | map('trim') | select('truthy') | list | length) > 0
+    - item.PowerState is defined
+    - item.PowerState is not none
+    - (item.PowerState | string | trim) in (bmc_power_states | default(_bmc_default_power_states))
 
 # First usable record wins, and the order the BMC returned them is preserved,
 # so selection is deterministic across runs against the same hardware.
@@ -53,36 +66,62 @@
   ansible.builtin.set_fact:
     _bmc_system: "{{ _bmc_usable | first | default({}, true) }}"
     _bmc_reachable: "{{ _bmc_usable | length > 0 }}"
+    _bmc_rejected: "{{ _bmc_candidates | reject('in', _bmc_usable) | list }}"
 
+# Says what was wrong, not merely that something was.
 - name: Record why no usable record was found
   ansible.builtin.set_fact:
     _bmc_unusable_why: >-
-      {{ 'ok' if _bmc_reachable | bool
-         else ('no system inventory returned' if _bmc_candidates | length == 0
-               else (_bmc_candidates | selectattr('error', 'defined') | list | length | string)
-                    ~ ' of ' ~ (_bmc_candidates | length | string)
-                    ~ ' record(s) were Redfish errors; the rest lacked an identifier or PowerState') }}
+      {{ 'ok' if _bmc_reachable | bool else _bmc_why_none }}
+  vars:
+    _bmc_error_count: "{{ _bmc_rejected | selectattr('error', 'defined') | list | length }}"
+    _bmc_why_none: >-
+      {{ 'no usable system inventory returned' if _bmc_candidates | length == 0
+         else 'of ' ~ _bmc_candidates | length ~ ' record(s): '
+              ~ _bmc_error_count ~ ' Redfish error(s); the rest lacked a non-blank '
+              ~ 'identifier (Id/UUID/SerialNumber/ServiceTag/SKU) or a recognised '
+              ~ 'PowerState ('
+              ~ (bmc_power_states | default(_bmc_default_power_states) | join('/'))
+              ~ ')' }}
 
-- name: Derive the BIOS firmware records the BMC reported
+# --- firmware ---------------------------------------------------------------
+#
+# Baseline and versions are normalised to trimmed strings before anything is
+# compared, so an integer version, a null, or a baseline of "" or "   " cannot
+# masquerade as a real value.
+- name: Normalise the firmware baseline
+  ansible.builtin.set_fact:
+    _bmc_bios_expected: >-
+      {{ ((firmware_baseline | default({})).bios_version | default('', true) | string | trim)
+         | default('unset', true) }}
+    _bmc_bios_entries: []
+
+- name: Normalise the BIOS firmware records
   ansible.builtin.set_fact:
     _bmc_bios_entries: >-
-      {{ (_fw.redfish_facts.firmware.entries | default([]))
-         | selectattr('Name', 'defined') | selectattr('Name', 'search', 'BIOS')
-         | selectattr('Version', 'defined') | list }}
-    _bmc_bios_expected: "{{ (firmware_baseline | default({})).bios_version | default('unset') }}"
+      {{ _bmc_bios_entries
+         + [{'id': (item.Id | default('', true) | string | trim | lower),
+             'version': (item.Version | string | trim)}] }}
+  loop: >-
+    {{ (_fw.redfish_facts.firmware.entries | default([])) | select('mapping')
+       | selectattr('Name', 'defined') | selectattr('Name', 'search', 'BIOS')
+       | selectattr('Version', 'defined') | rejectattr('Version', 'none') | list }}
+  loop_control:
+    label: "{{ item.Id | default(item.Name) | default('bios') }}"
+  # A version that trims to nothing carries no information and is dropped, so
+  # the state becomes UNKNOWN_INSTALLED rather than an empty-string comparison.
+  when: (item.Version | string | trim) | length > 0
 
 # Dell reports the running and the rollback image under the same Name, "BIOS",
-# distinguished only by Id (Installed-159-2.15.1 vs Previous-159-2.14.0).
-# Prefer a record that does not identify itself as a previous image; fall back
-# to records that carry no Id.
+# distinguished only by Id (Installed-159-2.15.1 vs Previous-159-2.14.0). Ids
+# are trimmed and lowercased above, so padding and casing cannot smuggle a
+# rollback image through. Records with no Id are kept: most BMCs report only
+# the running image.
 - name: Derive the installed BIOS version
   ansible.builtin.set_fact:
     _bmc_bios_installed: >-
-      {{ (_bmc_bios_entries | selectattr('Id', 'defined')
-          | rejectattr('Id', 'search', '(?i)^(previous|rollback|backup)')
-          | map(attribute='Version') | first)
-         | default((_bmc_bios_entries | rejectattr('Id', 'defined')
-           | map(attribute='Version') | first), true)
+      {{ (_bmc_bios_entries | rejectattr('id', 'match', '(previous|rollback|backup)')
+          | map(attribute='version') | first)
          | default('unknown', true) }}
 
 # An unknown installed version and an unset baseline are not "no drift". Both

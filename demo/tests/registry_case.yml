@@ -12,8 +12,12 @@
       - _payload_state == case.payload_state
       - (_cert_ok | bool) == (case.cert_ok | bool)
       - _unreachable_hosts == (case.unreachable | default([]))
-      # A 401 payload probe must never be reported as confirmed content.
-      - _payload_state != 'CONFIRMED' or (_payload.status | default(0)) == 200
+      # Only an exact 200 may ever be reported as confirmed content.
+      - _payload_state != 'CONFIRMED' or (_payload.status | default('') | string | trim) == '200'
+      # Nothing was probed means nothing was verified.
+      - _registry_status != 'PASS' or _reg_results | length > 0
+      # A non-PASS status must carry an actionable reason.
+      - _registry_status == 'PASS' or (_registry_why | trim | length) > 0
       # PASS requires everything to have been positively verified.
       - _registry_status != 'PASS' or (_payload_state == 'CONFIRMED' and (_cert_ok | bool))
     success_msg: "ok: {{ case.name }} [status={{ _registry_status }} payload={{ _payload_state }}]"

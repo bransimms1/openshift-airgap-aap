@@ -1,0 +1,29 @@
+---
+# One mirror-host fixture: parse it with the shipped logic, then assert.
+# Included once per address by demo/tests/registry_verdict.yml.
+
+- name: Parse the address with the shipped rules
+  ansible.builtin.include_tasks: ../../playbooks/tasks/mirror_host_parse.yml
+
+- name: Assert an accepted address parses correctly
+  ansible.builtin.assert:
+    that:
+      - _mirror_host_error | length == 0
+      - _registry_hostname == addr.hostname
+      - (_registry_port | string) == addr.port
+    success_msg: "ok: {{ addr.host }} -> {{ _registry_hostname }} port {{ _registry_port }}"
+    fail_msg: >-
+      FAILED: {{ addr.host }} -> {{ _registry_hostname }} port {{ _registry_port }}
+      error={{ _mirror_host_error }}, wanted {{ addr.hostname }}:{{ addr.port }}
+  when: addr.error_contains is not defined
+
+- name: Assert a malformed address is rejected with an actionable reason
+  ansible.builtin.assert:
+    that:
+      - _mirror_host_error | length > 0
+      - addr.error_contains in _mirror_host_error
+    success_msg: "ok: {{ addr.host | default('(empty)') }} rejected - {{ _mirror_host_error }}"
+    fail_msg: >-
+      FAILED: {{ addr.host | default('(empty)') }} should have been rejected with
+      '{{ addr.error_contains }}', got '{{ _mirror_host_error }}'
+  when: addr.error_contains is defined

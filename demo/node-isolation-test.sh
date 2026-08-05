@@ -67,6 +67,14 @@ PLAYBOOKS=(
   20_readiness_report
 )
 
+for pb in "${PLAYBOOKS[@]}"; do
+  if [ ! -f "${REPO}/playbooks/${pb}.yml" ]; then
+    echo "ERROR: playbooks/${pb}.yml does not exist. The node list and the" >&2
+    echo "       repository disagree; refusing to report a partial run." >&2
+    exit 2
+  fi
+done
+
 echo "Scenario: ${SCENARIO}"
 echo "Each node runs in its own process with its own filesystem root."
 echo
@@ -92,18 +100,29 @@ for pb in "${PLAYBOOKS[@]}"; do
   rc=$?
 
   # Merge this node's published artifacts into the set carried forward.
-  python3 - "${out}" "${ART}" <<'PY'
+  # Invalid callback output is a harness failure, not "this node published
+  # nothing". Silently substituting {} would let a broken run look like a node
+  # that simply had no artifacts to share.
+  if ! python3 - "${out}" "${ART}" "${pb}" <<'PY'
 import json, sys
-out, art = sys.argv[1], sys.argv[2]
+out, art, node = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.load(open(out))
-except Exception:
-    data = {}
-stats = (data.get("global_custom_stats") or {})
+except Exception as exc:
+    sys.stderr.write(f"ERROR: {node} produced unparseable JSON callback output: {exc}\n")
+    sys.exit(2)
+stats = data.get("global_custom_stats") or {}
+if not isinstance(stats, dict):
+    sys.stderr.write(f"ERROR: {node} published non-mapping custom stats\n")
+    sys.exit(2)
 carried = json.load(open(art))
 carried.update(stats)
 json.dump(carried, open(art, "w"), indent=2)
 PY
+  then
+    echo "ERROR: artifact merge failed after ${pb}; see ${WORK}" >&2
+    exit 2
+  fi
 
   if [ ${rc} -eq 0 ]; then
     printf '  %-28s OK\n' "${pb}"
@@ -142,19 +161,22 @@ echo "Logs: ${WORK}"
 # Machine-readable summary, for CI and anything else that needs to assert on the
 # outcome rather than parse the log.
 if [ -n "${ISOLATION_SUMMARY:-}" ]; then
-  ISO_STATUS_FILE="${STATUS_FILE}" \
-  ISO_ARTIFACTS="${ART}" \
-  ISO_SCENARIO="${SCENARIO}" \
-  ISO_VERDICT="${VERDICT}" \
-  ISO_DEST="${ISOLATION_SUMMARY}" \
-  python3 - <<'SUMMARY'
-import json, os
+  if ! ISO_STATUS_FILE="${STATUS_FILE}" \
+       ISO_ARTIFACTS="${ART}" \
+       ISO_SCENARIO="${SCENARIO}" \
+       ISO_VERDICT="${VERDICT}" \
+       ISO_DEST="${ISOLATION_SUMMARY}" \
+       python3 - <<'SUMMARY'
+import json, os, sys
 
 nodes = {}
 with open(os.environ["ISO_STATUS_FILE"]) as fh:
     for line in fh:
         if line.strip():
             name, status = line.rstrip("\n").split("\t")
+            if name in nodes:
+                sys.stderr.write(f"ERROR: node {name} reported twice\n")
+                sys.exit(2)
             nodes[name] = status
 
 carried = json.load(open(os.environ["ISO_ARTIFACTS"]))
@@ -166,5 +188,9 @@ json.dump({
     "artifacts": sorted(carried),
 }, open(os.environ["ISO_DEST"], "w"), indent=2)
 SUMMARY
+  then
+    echo "ERROR: could not write the summary to ${ISOLATION_SUMMARY}" >&2
+    exit 2
+  fi
   echo "Summary: ${ISOLATION_SUMMARY}"
 fi

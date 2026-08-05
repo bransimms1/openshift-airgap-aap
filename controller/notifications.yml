@@ -1,23 +1,61 @@
 ---
+# OPTIONAL. The standard bootstrap does not create notifications: the readiness
+# workflow is fully functional without them, and this playbook needs a webhook
+# endpoint that only you can supply.
+#
+# Apply it when you want the workflow to notify on error and on approval:
+#
+#   ansible-playbook controller/notifications.yml \
+#     -e controller_hostname="$CONTROLLER_HOST" \
+#     -e controller_token="$CONTROLLER_TOKEN" \
+#     -e controller_notification_url="https://chat.example.com/hooks/your-hook"
+#
+# Run from inside AAP with a Red Hat Ansible Automation Platform credential
+# attached and the hostname and token are injected, so only the URL is needed.
+#
+# Prerequisite: a webhook endpoint that accepts POST with a JSON body. The
+# workflow openshift-site-readiness must already exist - apply
+# controller/workflow_templates.yml first.
 - name: Define notifications
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    # Must match the organization used by the other controller playbooks.
+    controller_organization: "Platform Engineering"
+    controller_notification_name: "site-readiness-webhook"
+    # No default that could quietly post somewhere: supply it at apply time.
+    controller_notification_url: ""
+    ctl: &ctl
+      controller_host: "{{ controller_hostname | default(omit) }}"
+      controller_oauthtoken: "{{ controller_token | default(omit) }}"
   tasks:
-    - ansible.controller.notification_template:
-        name: "site-readiness-webhook"
-        organization: "Platform Engineering"
+
+    - name: A webhook URL is required
+      ansible.builtin.assert:
+        that: controller_notification_url | length > 0
+        fail_msg: >-
+          Set controller_notification_url to the endpoint that should receive
+          notifications, for example
+          -e controller_notification_url="https://chat.example.com/hooks/xyz".
+          Notifications are optional; skip this playbook to run without them.
+
+    - name: Define the webhook notification template
+      ansible.controller.notification_template:
+        <<: *ctl
+        name: "{{ controller_notification_name }}"
+        organization: "{{ controller_organization }}"
         notification_type: webhook
         notification_configuration:
-          url: "https://chat.example.com/hooks/platform-eng"
+          url: "{{ controller_notification_url }}"
           http_method: POST
-          headers: { Content-Type: "application/json" }
-        controller_host: "{{ controller_hostname }}"
-        controller_oauthtoken: "{{ controller_token }}"
+          headers:
+            Content-Type: "application/json"
 
-    - ansible.controller.workflow_job_template:
+    - name: Attach it to the readiness workflow
+      ansible.controller.workflow_job_template:
+        <<: *ctl
         name: "openshift-site-readiness"
-        notification_templates_error: ["site-readiness-webhook"]
-        notification_templates_approvals: ["site-readiness-webhook"]
-        controller_host: "{{ controller_hostname }}"
-        controller_oauthtoken: "{{ controller_token }}"
+        organization: "{{ controller_organization }}"
+        notification_templates_error: ["{{ controller_notification_name }}"]
+        notification_templates_approvals: ["{{ controller_notification_name }}"]

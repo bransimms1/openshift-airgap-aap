@@ -10,37 +10,70 @@
 #   _payload          registered uri result for the release tags list
 #
 # Outputs:
+#   _reg_results        the probe results, normalised to a list
 #   _unreachable_hosts  hosts that did not answer on /v2/
 #   _cert_ok            bool: a certificate was actually read
 #   _payload_state      CONFIRMED | UNCONFIRMED | MISSING
 #   _registry_status    PASS | UNCONFIRMED | FAIL
+#   _registry_why       actionable reason when the status is not PASS
+#
+# HTTP statuses are compared as trimmed strings throughout. The uri module
+# returns an integer, but a fixture, a callback or a future change can supply
+# "200", and an int-vs-string comparison would silently grade it as MISSING.
+# Normalising to a string never turns an absent or malformed status into a
+# successful one: anything that is not exactly "200" or "401" is MISSING.
+
+- name: Normalise the registry probe results
+  ansible.builtin.set_fact:
+    _reg_results: "{{ (_reg.results | default([])) | select('mapping') | list }}"
+    _unreachable_hosts: []
+
+- name: Collect the hosts that did not answer on /v2/
+  ansible.builtin.set_fact:
+    _unreachable_hosts: "{{ _unreachable_hosts + [item.item | default('unnamed host')] }}"
+  loop: "{{ _reg_results }}"
+  loop_control:
+    label: "{{ item.item | default('unnamed host') }}"
+  when: (item.status | default('') | string | trim) not in ['200', '401']
 
 - name: Derive the registry verdicts
   ansible.builtin.set_fact:
-    _unreachable_hosts: >-
-      {{ _reg.results | rejectattr('status', 'in', [200, 401])
-         | map(attribute='item') | list }}
     # get_certificate runs with failed_when: false so its result reaches
     # set_stats. An absent not_after is the only reliable sign that no
     # certificate came back.
-    _cert_ok: "{{ _cert.not_after is defined and _cert.not_after | length > 0 }}"
+    _cert_ok: >-
+      {{ _cert.not_after is defined and _cert.not_after is not none
+         and (_cert.not_after | string | trim | length) > 0 }}
     # 200 is the only response that confirms the release repository exists.
     # 401 proves routing and TLS work and that the endpoint is there, but the
     # tag list is not enumerable without credentials, so payload existence is
-    # neither confirmed nor disproved. 404 and anything else mean it is not
-    # published where the cluster will look for it.
+    # neither confirmed nor disproved. Everything else - 404, a redirect, 403,
+    # a missing status - means it is not published where the cluster will look.
     _payload_state: >-
-      {{ 'CONFIRMED' if (_payload.status | default(0)) == 200
-         else ('UNCONFIRMED' if (_payload.status | default(0)) == 401 else 'MISSING') }}
+      {{ 'CONFIRMED' if (_payload.status | default('') | string | trim) == '200'
+         else ('UNCONFIRMED' if (_payload.status | default('') | string | trim) == '401'
+               else 'MISSING') }}
 
-# UNCONFIRMED is not PASS. The readiness report grades it alongside SIMULATED
-# and SKIPPED, so an authenticated mirror yields READY_WITH_LIMITATIONS rather
-# than full readiness - the environment may well be correct, but this run did
-# not prove it.
+# An empty result set means no mirror host was probed at all - an empty
+# mirror_hosts, or a loop that never ran. Nothing was verified, so this cannot
+# be PASS however healthy the certificate and payload probes look.
 - name: Derive the overall registry status
   ansible.builtin.set_fact:
     _registry_status: >-
-      {{ 'FAIL' if (_unreachable_hosts | length > 0
+      {{ 'FAIL' if (_reg_results | length == 0
+                    or _unreachable_hosts | length > 0
                     or not (_cert_ok | bool)
                     or _payload_state == 'MISSING')
          else ('UNCONFIRMED' if _payload_state == 'UNCONFIRMED' else 'PASS') }}
+    _registry_why: >-
+      {{ 'no registry host was probed - mirror_hosts is empty or the /v2/ check did not run'
+         if _reg_results | length == 0
+         else ('did not answer on /v2/: ' ~ (_unreachable_hosts | join(', '))
+               if _unreachable_hosts | length > 0
+               else ('no certificate could be read from the registry'
+                     if not (_cert_ok | bool)
+                     else ('release payload not found in the mirror'
+                           if _payload_state == 'MISSING'
+                           else ('release payload presence could not be confirmed - the tag
+                                  list requires authentication'
+                                 if _payload_state == 'UNCONFIRMED' else 'ok')))) }}

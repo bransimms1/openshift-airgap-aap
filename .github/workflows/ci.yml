@@ -196,55 +196,40 @@ jobs:
       # Each node runs in its own process with its own filesystem root and
       # carries artifacts forward, the way Automation Controller runs a workflow
       # on OpenShift. A node that depends on a sibling's files fails here.
-      # Asserted against the harness's structured summary, not against the log.
-      # A node name appearing in output does not prove that node's status.
+      # Asserted against the harness's structured summary, not the log.
+      # assert_isolation_summary.py requires the EXACT expected node set, so a
+      # node quietly dropped from the harness fails CI rather than shrinking
+      # what is checked.
       - name: passing scenario reaches the gate
         run: |
           ISOLATION_SUMMARY=/tmp/passing.json demo/node-isolation-test.sh passing
-          python3 - <<'PY'
-          import json, sys
-          d = json.load(open("/tmp/passing.json"))
-          errs = []
-          if d["verdict"] != "READY_WITH_LIMITATIONS":
-              errs.append(f"verdict is {d['verdict']}, expected READY_WITH_LIMITATIONS")
-          if d["failed_nodes"]:
-              errs.append(f"nodes failed: {d['failed_nodes']}")
-          for node in ("00_bundle_intake", "10_validate_dns", "20_readiness_report"):
-              if d["nodes"].get(node) != "ok":
-                  errs.append(f"{node} is {d['nodes'].get(node)}, expected ok")
-          # Artifacts must actually have crossed a node boundary.
-          for artifact in ("expected_dns", "cluster_fqdn", "readiness_overall"):
-              if artifact not in d["artifacts"]:
-                  errs.append(f"artifact {artifact} did not cross node boundaries")
-          for e in errs:
-              print(f"::error::{e}")
-          sys.exit(1 if errs else 0)
-          PY
+          python3 .github/scripts/assert_isolation_summary.py /tmp/passing.json passing
 
+      # The harness exits non-zero because nodes failed, which is the point of
+      # this scenario. `|| true` keeps the step alive so the assertion below can
+      # validate the complete summary - and that assertion is conclusive: exact
+      # node set, per-node status, verdict and artifacts.
       - name: failing_dns scenario stops at DNS and blocks the gate
         run: |
           ISOLATION_SUMMARY=/tmp/failing.json demo/node-isolation-test.sh failing_dns || true
-          python3 - <<'PY'
-          import json, sys
-          d = json.load(open("/tmp/failing.json"))
-          errs = []
-          if d["verdict"] != "NOT_READY":
-              errs.append(f"verdict is {d['verdict']}, expected NOT_READY")
-          if d["nodes"].get("10_validate_dns") != "failed":
-              errs.append(f"10_validate_dns is {d['nodes'].get('10_validate_dns')}, expected failed")
-          # The report node must fail: that is what makes the approval gate
-          # unreachable, because approval hangs off its success edge.
-          if d["nodes"].get("20_readiness_report") != "failed":
-              errs.append(f"20_readiness_report is {d['nodes'].get('20_readiness_report')}, expected failed")
-          # Everything else must still have run - a failure that takes the whole
-          # workflow down would also produce NOT_READY.
-          for node, status in d["nodes"].items():
-              if node not in ("10_validate_dns", "20_readiness_report") and status != "ok":
-                  errs.append(f"{node} is {status}, expected ok")
-          for e in errs:
-              print(f"::error::{e}")
-          sys.exit(1 if errs else 0)
-          PY
+          python3 .github/scripts/assert_isolation_summary.py /tmp/failing.json failing_dns
+
+      # Proves the assertion above can fail: removing a node from a copy of the
+      # summary must be rejected. Without this the exact-set check could rot
+      # into something that accepts anything.
+      - name: node-set assertion rejects an incomplete summary
+        run: |
+          python3 -c "
+          import json
+          d = json.load(open('/tmp/passing.json'))
+          d['nodes'].pop('13_validate_vips')
+          json.dump(d, open('/tmp/incomplete.json', 'w'))
+          "
+          if python3 .github/scripts/assert_isolation_summary.py /tmp/incomplete.json passing; then
+            echo "::error::the node-set assertion accepted a summary with a node removed"
+            exit 1
+          fi
+          echo "ok: an incomplete summary is rejected"
 
   docs:
     name: Documentation and fixture checks
@@ -256,6 +241,8 @@ jobs:
           python-version: "3.11"
       - name: repo_checks unit tests
         run: python3 .github/scripts/test_repo_checks.py
+      - name: isolation summary assertion unit tests
+        run: python3 .github/scripts/test_assert_isolation_summary.py
       - name: Docs, fixtures and build instructions match the tree
         run: python3 .github/scripts/repo_checks.py
 

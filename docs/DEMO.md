@@ -57,8 +57,8 @@ VIP and Redfish validation are simulated.
 | `15-validate-bmc` | Reports **SIMULATED** or **SKIPPED** depending on the survey. Never dials out. |
 
 The report labels each branch with its state, so a `READY_WITH_LIMITATIONS`
-verdict shows exactly which checks were not executed against a real environment,
-or ran without being able to confirm their result.
+verdict shows exactly which checks were simulated, skipped, or ran without
+being able to confirm their result.
 
 Firmware comparison in `15-validate-bmc` is advisory: it is published as
 `firmware_state` (`MATCH`, `DRIFT`, `UNKNOWN_INSTALLED` or `BASELINE_UNSET`) and
@@ -313,6 +313,6 @@ ISOLATION_SUMMARY=/tmp/result.json demo/node-isolation-test.sh failing_dns
 | `01-validate-bundle` fails on `ipaddr` | `netaddr` missing from the execution environment | Rebuild it; `execution-environment/requirements.txt` includes it |
 | Every branch reports SKIPPED in the report | Running the single-process smoke test, or the intake node failed | Use `demo/node-isolation-test.sh`; `set_stats` only flows between workflow nodes |
 | Report says `NOT_READY` and the job is red | Correct behaviour when a branch failed | The gate is meant to be unreachable. Fix the environment and relaunch |
-| Verdict is `READY_WITH_LIMITATIONS` | Something was SIMULATED or SKIPPED | Expected in demo mode. Approving means accepting those limitations |
+| Verdict is `READY_WITH_LIMITATIONS` | Something was SIMULATED, SKIPPED or UNCONFIRMED | Expected in demo mode. Approving means accepting those limitations |
 | DNS passes when you expected a failure | Scenario left on `passing` | Relaunch with `failing_dns` |
 | The approval node never appears | A branch is still failing | Correct behaviour — the gate is unreachable while anything is red |
