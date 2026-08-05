@@ -7,14 +7,13 @@
 # by another workflow node, because on OpenShift there is no shared filesystem
 # between execution pods.
 #
-# Five per-branch states:
+# Per-branch states:
 #   PASS         the check ran and the environment satisfied it
 #   FAIL         the check ran and it did not
-#   UNCONFIRMED  the check ran, found nothing wrong, and could not positively
-#                verify what it set out to verify - an authenticated mirror
-#                that will not enumerate its release tags, for example
-#   SIMULATED    demo mode; the check did not contact anything real
-#   SKIPPED      the branch did not run, or was deliberately not run
+#   UNCONFIRMED  the check ran but could not confirm its result - an
+#                authenticated mirror that will not list its release tags
+#   SIMULATED    demo mode; nothing real was contacted
+#   SKIPPED      the branch did not run
 #
 # Three overall states:
 #   READY                   every branch executed and passed

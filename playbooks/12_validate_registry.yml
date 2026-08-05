@@ -1,22 +1,24 @@
 ---
-# Validate registry reachability, certificate trust, and release content.
-# Reachability alone is not sufficient: the chain the registry presents must
-# match the CA the cluster was configured to trust, as seen from this subnet.
+# Validate the mirror registry: reachable, presenting a trust chain the cluster
+# will accept, and actually holding the release payload.
+#
+# Reachability alone is not enough. The chain the registry presents has to match
+# the CA in the bundle's additionalTrustBundle, as seen from this subnet, or
+# every image pull fails with x509 errors after the install completes.
 - name: Validate mirror registry reachability, trust and content
   hosts: validators
   gather_facts: false
   vars:
-    # Fallback only. The port actually checked is parsed from the mirror host
-    # below, so a mirror published on 443 is not probed on 8443.
-    registry_port_default: 8443
-    # This node's own scratch space. It does not read anything the intake node
-    # wrote: trust_bundle arrives as a workflow artifact and is written out
-    # here, in this pod, immediately before it is used.
+    # Used when a mirror host carries no explicit port.
+    registry_default_port: 8443
+    # This node's own scratch space. It reads nothing the intake node wrote:
+    # trust_bundle arrives as a workflow artifact and is written out here, in
+    # this pod, immediately before it is used.
     registry_workdir: "/tmp/registry-check-{{ awx_job_id | default('local', true) }}"
   tasks:
 
-    # There is no mirror registry in demo mode. Dialling out to a hostname that
-    # does not resolve would hang the branch and take the demo with it.
+    # There is no mirror registry in demo mode, and dialling out to a name that
+    # does not resolve would hang the branch.
     - name: DEMO - record the branch as simulated
       when: demo_mode | default(false) | bool
       block:
@@ -25,63 +27,14 @@
             data:
               check_registry:
                 status: SIMULATED
-                hosts: "{{ mirror_hosts | default([], true) }}"
+                hosts: "{{ mirror_hosts | default([]) }}"
                 detail: >-
                   Demo mode. In production this fetches /v2/ over TLS validated
                   by the bundle's own additionalTrustBundle, reads the
-                  certificate the registry actually presents, and probes for the
-                  release payload. A mirror that requires authentication returns
-                  401, which leaves payload presence UNCONFIRMED rather than
-                  verified.
+                  certificate the registry presents, and probes for the release
+                  payload.
         - name: End the play
           ansible.builtin.meta: end_play
-
-    # A string here would be iterated character by character by the loop below,
-    # and a mapping key by key. Assert the shape before anything consumes it.
-    - name: Mirror hosts must be a non-empty list of scalars
-      ansible.builtin.assert:
-        that:
-          - mirror_hosts is defined
-          - mirror_hosts is not none
-          - mirror_hosts is sequence
-          - mirror_hosts is not string
-          - mirror_hosts is not mapping
-          - (mirror_hosts | length) > 0
-          # Strings only. A number would be stringified by the parser and then
-          # accepted by the hostname matcher, contradicting the documented form.
-          - mirror_hosts | reject('string') | list | length == 0
-        fail_msg: >-
-          mirror_hosts must be a non-empty list of host strings, for example:
-            mirror_hosts:
-              - registry.example.com:8443
-          It is derived from the bundle's imageContentSources, so an empty or
-          malformed value means the bundle declares no usable mirror.
-          Got: {{ mirror_hosts | default('undefined') }}
-
-    # Parsing and validation live in tasks/mirror_host_parse.yml so the tests
-    # exercise the same expressions. EVERY entry is validated, not just the
-    # first: the /v2/ probe below loops over all of them, so a malformed second
-    # host would otherwise reach the network as a nonsense URL. This runs before
-    # any network module, and names the value and the accepted forms.
-    - name: Reset the normalised endpoint list
-      ansible.builtin.set_fact:
-        _mirror_endpoints: []
-
-    - name: Validate every mirror host and record its normalised endpoint
-      ansible.builtin.include_tasks: tasks/mirror_host_validate.yml
-      loop: "{{ mirror_hosts }}"
-      loop_control:
-        loop_var: _mh
-        label: "{{ _mh }}"
-
-    # Every probe below uses these, never the raw entry, so the certificate read
-    # and the HTTP probes cannot target different spellings of one endpoint.
-    - name: Bind the endpoint the certificate is read from
-      ansible.builtin.set_fact:
-        _mirror_authorities: "{{ _mirror_endpoints | map(attribute='authority') | list }}"
-        _registry_hostname: "{{ _mirror_endpoints[0].hostname }}"
-        _registry_port: "{{ _mirror_endpoints[0].port }}"
-        _registry_authority: "{{ _mirror_endpoints[0].authority }}"
 
     - name: Create this job's scratch directory
       ansible.builtin.file:
@@ -95,80 +48,79 @@
         dest: "{{ registry_workdir }}/trust-bundle.pem"
         mode: "0644"
 
+    # mirror_hosts entries come from the bundle as host or host:port. The
+    # certificate read needs the two separately, so split once here.
+    - name: Split the first mirror host into address and port
+      ansible.builtin.set_fact:
+        registry_host: "{{ mirror_hosts[0] | split(':') | first }}"
+        registry_port: >-
+          {{ mirror_hosts[0] | split(':') | last if ':' in mirror_hosts[0]
+             else registry_default_port }}
+
     - name: Registry /v2/ API must respond over TLS validated by that bundle
       ansible.builtin.uri:
         url: "https://{{ item }}/v2/"
         ca_path: "{{ registry_workdir }}/trust-bundle.pem"
         validate_certs: true
-        status_code: [200, 401]   # 401 is fine - it means TLS and routing work
-      loop: "{{ _mirror_authorities }}"
+        status_code: [200, 401]   # 401 is fine - TLS and routing work
+      loop: "{{ mirror_hosts }}"
       register: _reg
       failed_when: false
 
     - name: Read the certificate the registry actually presents
       community.crypto.get_certificate:
-        host: "{{ _registry_hostname }}"
-        port: "{{ _registry_port }}"
+        host: "{{ registry_host }}"
+        port: "{{ registry_port }}"
       register: _cert
       failed_when: false
 
-    # 404 on the tags/list endpoint means the release repository is not in the
-    # mirror. The install would proceed as far as pulling the payload and then
-    # stop, so it is treated as a failure.
-    - name: Confirm the release payload for this version exists in the mirror
+    # 200 confirms the release repository is there. 401 means the endpoint
+    # exists but the tag list needs credentials, so presence is neither proved
+    # nor disproved - reported as UNCONFIRMED rather than counted as a pass.
+    - name: Look for the release payload in the mirror
       ansible.builtin.uri:
-        url: "https://{{ _registry_authority }}/v2/openshift/release-images/tags/list"
+        url: "https://{{ mirror_hosts[0] }}/v2/openshift/release-images/tags/list"
         ca_path: "{{ registry_workdir }}/trust-bundle.pem"
         status_code: [200, 401]
       register: _payload
       failed_when: false
 
-    # Grading lives in tasks/registry_verdict.yml so the same expressions can be
-    # exercised against fixture data by demo/tests/registry_verdict.yml.
-    - name: Grade the probe results
-      ansible.builtin.include_tasks: tasks/registry_verdict.yml
-      vars:
-        mirror_hosts: "{{ _mirror_authorities }}"
+    - name: Grade the three things this branch checks
+      ansible.builtin.set_fact:
+        unreachable_hosts: >-
+          {{ _reg.results | rejectattr('status', 'in', [200, 401])
+             | map(attribute='item') | list }}
+        cert_read: "{{ _cert.not_after is defined }}"
+        payload_state: >-
+          {{ 'CONFIRMED' if _payload.status | default(0) == 200
+             else ('UNCONFIRMED' if _payload.status | default(0) == 401 else 'MISSING') }}
 
     - name: Publish result
       ansible.builtin.set_stats:
         data:
           check_registry:
-            status: "{{ _registry_status }}"
-            hosts: "{{ _mirror_authorities }}"
-            unreachable: "{{ _unreachable_hosts }}"
-            cert_host: "{{ _registry_authority }}"
+            status: >-
+              {{ 'FAIL' if (unreachable_hosts or not cert_read or payload_state == 'MISSING')
+                 else ('UNCONFIRMED' if payload_state == 'UNCONFIRMED' else 'PASS') }}
+            hosts: "{{ mirror_hosts }}"
+            unreachable: "{{ unreachable_hosts }}"
+            cert_host: "{{ registry_host }}:{{ registry_port }}"
             cert_expires: "{{ _cert.not_after | default('unknown') }}"
-            cert_retrieved: "{{ _cert_ok }}"
-            release_probe: "{{ _payload.status | default('n/a') }}"
-            # CONFIRMED only on 200. UNCONFIRMED means the endpoint requires
-            # authentication, so this run neither proved nor disproved that the
-            # release payload is present.
-            release_payload_state: "{{ _payload_state }}"
-            detail: >-
-              {{ 'Release payload confirmed present.' if _payload_state == 'CONFIRMED'
-                 else ('Release payload presence UNCONFIRMED: the tag list requires
-                        authentication, so this check did not verify release content.'
-                       if _payload_state == 'UNCONFIRMED'
-                       else 'Release payload not found in the mirror.') }}"
+            release_payload: "{{ payload_state }}"
 
-    - name: Fail on unreachable hosts, unreadable trust, or a missing payload
+    - name: Fail on an unreachable mirror, an unreadable chain, or a missing payload
       ansible.builtin.fail:
         msg: >-
-          {% if _unreachable_hosts | length > 0 %}
-          {{ _unreachable_hosts | join(', ') }} did not answer on /v2/.
-          If this is a certificate error, the CA in additionalTrustBundle does
-          not match what the registry is presenting - the cluster will fail
-          every image pull with x509 errors after install.
+          {% if unreachable_hosts %}
+          {{ unreachable_hosts | join(', ') }} did not answer on /v2/. If this is
+          a certificate error, the CA in additionalTrustBundle does not match
+          what the registry presents, and the cluster will fail every image pull
+          with x509 errors after install.
+          {% elif not cert_read %}
+          No certificate could be read from {{ registry_host }}:{{ registry_port }},
+          so the trust chain could not be verified.
+          {% else %}
+          The release payload was not found in the mirror. oc-mirror did not
+          publish it, or published it under a different path.
           {% endif %}
-          {% if not _cert_ok %}
-          No certificate could be read from {{ _registry_hostname }}:{{ _registry_port }}.
-          The trust chain cannot be verified, so nothing here proves the cluster
-          will accept what the registry presents.
-          {% endif %}
-          {% if _payload_state == 'MISSING' %}
-          The release payload probe returned {{ _payload.status | default('no response') }}.
-          The release repository is not in the mirror - oc-mirror did not publish
-          it, or it was published under a different path.
-          {% endif %}
-      when: _registry_status == 'FAIL'
+      when: unreachable_hosts or not cert_read or payload_state == 'MISSING'

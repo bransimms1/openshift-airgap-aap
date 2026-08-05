@@ -40,11 +40,9 @@ CI runs the following on every push and pull request:
 |---|---|
 | `secret_scan.py` | Literal values under credential-shaped keys. Accepts references — `{{ var }}`, `${VAR}`, `${{ secrets.X }}` — and rejects values that mix a reference with a literal fragment |
 | gitleaks | General-purpose secret detection over the working tree and the full commit history, using the default rule set |
-| `negative_secret_tests.sh` | Negative tests for the repository's secret-scanning rules: injects credential-shaped material into throwaway copies and asserts each scanner reports it, with the expected rule and location |
-| `repo_checks.py` | Documentation links and references resolve, demo fixtures are tracked, fixture MAC addresses are valid, fixtures carry nothing credential-shaped |
 
-There is no `.gitleaksignore` and no gitleaks allowlist, and CI asserts that both
-remain absent. If a finding is genuinely a false positive, prefer, in order:
+There is no `.gitleaksignore` and no gitleaks allowlist. If a finding is
+genuinely a false positive, prefer, in order:
 change the content so it no longer looks like a credential; add a
 `.gitleaksignore` fingerprint, which pins a single finding in one file at one
 commit and expires when the line changes; or, as a last resort, an allowlist

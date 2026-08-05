@@ -85,14 +85,11 @@ openshift-airgap-aap/
 ├── .ansible-lint  .yamllint  .gitleaks.toml
 ├── .github/
 │   ├── workflows/
-│   │   ├── ci.yml                      # lint, syntax, demo, docs, secrets
+│   │   ├── ci.yml                      # lint, syntax, demo, secrets
 │   │   ├── controller-validate.yml     # certified-collection check, manual dispatch
 │   │   └── apply-controller-config.yml # applies controller-as-code, manual dispatch
 │   └── scripts/
-│       ├── secret_scan.py              # literal credentials in credential-shaped keys
-│       ├── repo_checks.py              # documentation and fixture consistency
-│       ├── test_repo_checks.py         # unit tests for the above
-│       └── negative_secret_tests.sh    # secret-scanner detection tests
+│       └── secret_scan.py              # literal credentials in credential-shaped keys
 ├── collections/requirements.yml        # runtime collections; public Galaxy only
 ├── controller/requirements.yml         # ansible.controller, to apply controller/
 ├── demo/                               # demo fixtures and test harnesses

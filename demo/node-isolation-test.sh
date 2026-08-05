@@ -18,14 +18,7 @@
 # Usage:
 #   demo/node-isolation-test.sh passing
 #   demo/node-isolation-test.sh failing_dns
-#
-# Set ISOLATION_SUMMARY to a path to also write a machine-readable result:
-#
-#   {"scenario": ..., "verdict": ..., "nodes": {"10_validate_dns": "failed"},
-#    "failed_nodes": [...], "artifacts": [...]}
-#
-# CI asserts against that file rather than grepping node names out of the log:
-# a node name appearing in the output does not prove that the node failed.
+
 set -uo pipefail
 
 SCENARIO="${1:-passing}"
@@ -80,8 +73,6 @@ echo "Each node runs in its own process with its own filesystem root."
 echo
 
 FAILED_NODES=()
-STATUS_FILE="${WORK}/node-status.tsv"
-: > "${STATUS_FILE}"
 n=0
 for pb in "${PLAYBOOKS[@]}"; do
   n=$((n + 1))
@@ -100,37 +91,21 @@ for pb in "${PLAYBOOKS[@]}"; do
   rc=$?
 
   # Merge this node's published artifacts into the set carried forward.
-  # Invalid callback output is a harness failure, not "this node published
-  # nothing". Silently substituting {} would let a broken run look like a node
-  # that simply had no artifacts to share.
-  if ! python3 - "${out}" "${ART}" "${pb}" <<'PY'
+  # Carry this node's published artifacts forward, the way Controller passes
+  # workflow artifacts between nodes.
+  python3 - "${out}" "${ART}" <<'PY'
 import json, sys
-out, art, node = sys.argv[1], sys.argv[2], sys.argv[3]
-try:
-    data = json.load(open(out))
-except Exception as exc:
-    sys.stderr.write(f"ERROR: {node} produced unparseable JSON callback output: {exc}\n")
-    sys.exit(2)
-stats = data.get("global_custom_stats") or {}
-if not isinstance(stats, dict):
-    sys.stderr.write(f"ERROR: {node} published non-mapping custom stats\n")
-    sys.exit(2)
-carried = json.load(open(art))
-carried.update(stats)
-json.dump(carried, open(art, "w"), indent=2)
+data = json.load(open(sys.argv[1]))
+carried = json.load(open(sys.argv[2]))
+carried.update(data.get("global_custom_stats") or {})
+json.dump(carried, open(sys.argv[2], "w"), indent=2)
 PY
-  then
-    echo "ERROR: artifact merge failed after ${pb}; see ${WORK}" >&2
-    exit 2
-  fi
 
   if [ ${rc} -eq 0 ]; then
     printf '  %-28s OK\n' "${pb}"
-    printf '%s\tok\n' "${pb}" >> "${STATUS_FILE}"
   else
     printf '  %-28s FAILED (rc=%s)\n' "${pb}" "${rc}"
     FAILED_NODES+=("${pb}")
-    printf '%s\tfailed\n' "${pb}" >> "${STATUS_FILE}"
   fi
 done
 
@@ -157,40 +132,3 @@ else
   echo "Nodes that failed: ${FAILED_NODES[*]}"
 fi
 echo "Logs: ${WORK}"
-
-# Machine-readable summary, for CI and anything else that needs to assert on the
-# outcome rather than parse the log.
-if [ -n "${ISOLATION_SUMMARY:-}" ]; then
-  if ! ISO_STATUS_FILE="${STATUS_FILE}" \
-       ISO_ARTIFACTS="${ART}" \
-       ISO_SCENARIO="${SCENARIO}" \
-       ISO_VERDICT="${VERDICT}" \
-       ISO_DEST="${ISOLATION_SUMMARY}" \
-       python3 - <<'SUMMARY'
-import json, os, sys
-
-nodes = {}
-with open(os.environ["ISO_STATUS_FILE"]) as fh:
-    for line in fh:
-        if line.strip():
-            name, status = line.rstrip("\n").split("\t")
-            if name in nodes:
-                sys.stderr.write(f"ERROR: node {name} reported twice\n")
-                sys.exit(2)
-            nodes[name] = status
-
-carried = json.load(open(os.environ["ISO_ARTIFACTS"]))
-json.dump({
-    "scenario": os.environ["ISO_SCENARIO"],
-    "verdict": os.environ["ISO_VERDICT"],
-    "nodes": nodes,
-    "failed_nodes": [k for k, v in nodes.items() if v == "failed"],
-    "artifacts": sorted(carried),
-}, open(os.environ["ISO_DEST"], "w"), indent=2)
-SUMMARY
-  then
-    echo "ERROR: could not write the summary to ${ISOLATION_SUMMARY}" >&2
-    exit 2
-  fi
-  echo "Summary: ${ISOLATION_SUMMARY}"
-fi

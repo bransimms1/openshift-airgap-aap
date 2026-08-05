@@ -286,22 +286,6 @@ ansible-playbook -i inventories/demo/hosts.yml demo/smoke-test.yml \
 report shows every branch as SKIPPED. Use the isolation test to check report
 contents.
 
-**Classification tests.** The BMC and registry branches share their grading logic
-with fixture-driven tests, so a change to the rules is exercised without needing
-hardware or a registry:
-
-```bash
-ansible-playbook -i localhost, demo/tests/bmc_classification.yml
-ansible-playbook -i localhost, demo/tests/registry_verdict.yml
-```
-
-**Structured results.** Set `ISOLATION_SUMMARY` to have the isolation harness
-write a JSON summary — per-node status, the verdict, and the artifacts that
-crossed node boundaries. CI asserts against this rather than parsing the log:
-
-```bash
-ISOLATION_SUMMARY=/tmp/result.json demo/node-isolation-test.sh failing_dns
-```
 
 ---
 

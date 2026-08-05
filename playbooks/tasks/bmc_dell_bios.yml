@@ -1,12 +1,11 @@
 ---
 # Dell-specific BIOS assertion, in its own file on purpose.
 #
-# include_tasks resolves at RUNTIME. A module referenced directly in a playbook
-# is resolved at PARSE time, which means the whole job fails if the collection
-# is absent - even when the task would have been skipped. Keeping this here
-# lets the readiness workflow parse and run in an execution environment that
-# does not carry dellemc.openmanage, while still using the certified module
-# wherever it is available.
+# include_tasks resolves at run time; a module referenced directly in a playbook
+# resolves at parse time. Keeping the Dell module here lets the readiness
+# workflow parse and run on an execution environment that does not carry
+# dellemc.openmanage, while still using the certified module where it is
+# available. That is why the collection is optional and undeclared.
 #
 # Reached only when bmc_vendor == 'dell'.
 - name: Assert BIOS attributes on Dell hardware
