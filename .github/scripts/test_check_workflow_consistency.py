@@ -171,6 +171,11 @@ case("approval attached to a readiness branch instead of the report fails",
      lambda r: edit(r / WORKFLOW, '          - { identifier: "readiness-report", type: success }',
                     '          - { identifier: "10-validate-dns", type: success }'), True)
 
+case("a readiness branch moved behind the approval gate fails",
+     lambda r: edit(r / WORKFLOW,
+                    '        parents: [{ identifier: "validate-bundle", type: success }]\n      loop:',
+                    '        parents: [{ identifier: "approve-execute", type: success }]\n      loop:'), True)
+
 case("an execution node bypassing approval fails",
      lambda r: edit(r / WORKFLOW,
                     'unified_job_template: "30-bmc-prepare-hosts"\n'

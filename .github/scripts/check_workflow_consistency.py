@@ -289,9 +289,13 @@ def validate_stages(nodes: dict[str, dict], pre: set[str]) -> list[str]:
         approval_parents = ancestors(nodes, APPROVAL_IDENTIFIER)
         if report not in approval_parents:
             errs.append(f"the approval node does not depend on {REPORT_CAPABILITY!r}")
+        # No readiness check may sit BEHIND the gate. A branch moved downstream
+        # of approval would still be a member of the workflow while no longer
+        # contributing to the evidence the approver sees.
         for ident in sorted(pre):
-            if ident in approval_parents or ident == report:
-                continue
+            if APPROVAL_IDENTIFIER in ancestors(nodes, ident):
+                errs.append(f"readiness node {ident!r} is downstream of the approval node")
+
         # Execution must be downstream of approval, with no bypass path.
         for template in EXECUTION_TEMPLATES:
             execution = node_for(template)
