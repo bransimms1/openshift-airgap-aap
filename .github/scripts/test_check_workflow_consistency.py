@@ -123,6 +123,85 @@ case("single-quoted job-template values are still read",
                     "playbook: 'playbooks/13_validate_vips.yml', "
                     "credentials: ['bastion-ssh'] }"), False)
 
+
+# --- graph shape ------------------------------------------------------------
+# Membership alone cannot prove the workflow is runnable, so these edits keep
+# every capability present and break the graph instead.
+
+DNS_PARENTS = ('        parents: [{ identifier: "validate-bundle", type: success }]\n'
+               '      loop:')
+
+case("a readiness node with no parents fails",
+     lambda r: edit(r / WORKFLOW,
+                    '        parents: [{ identifier: "validate-bundle", type: success }]\n      loop:',
+                    "      loop:"), True)
+
+def _cycle(root: Path) -> None:
+    """Give the looped readiness nodes a parent that is one of themselves."""
+    edit(root / WORKFLOW,
+         '        parents: [{ identifier: "validate-bundle", type: success }]\n      loop:',
+         '        parents: [{ identifier: "10-validate-dns", type: success }]\n      loop:')
+
+case("a cycle among readiness nodes fails", _cycle, True)
+
+case("a parent that does not exist fails",
+     lambda r: edit(r / WORKFLOW, 'identifier: "validate-bundle", type: success }]',
+                    'identifier: "does-not-exist", type: success }]'), True)
+
+case("a second approval node fails",
+     lambda r: edit(r / WORKFLOW, '        identifier: "approve-execute"',
+                    '        identifier: "approve-twice"\n'
+                    '        approval_node:\n'
+                    '          name: "Second gate"\n'
+                    '        parents:\n'
+                    '          - { identifier: "readiness-report", type: success }\n\n'
+                    '    - ansible.controller.workflow_job_template_node:\n'
+                    '        <<: *ctl\n'
+                    '        workflow: "openshift-site-readiness"\n'
+                    '        identifier: "approve-execute"'), True)
+
+case("a renamed approval node fails",
+     lambda r: edit(r / WORKFLOW, 'identifier: "approve-execute"',
+                    'identifier: "authorise"'), True)
+
+case("the report detached from a branch fails",
+     lambda r: edit(r / WORKFLOW, '          - { identifier: "13-validate-vips",     type: always }\n', ""), True)
+
+case("approval attached to a readiness branch instead of the report fails",
+     lambda r: edit(r / WORKFLOW, '          - { identifier: "readiness-report", type: success }',
+                    '          - { identifier: "10-validate-dns", type: success }'), True)
+
+case("an execution node bypassing approval fails",
+     lambda r: edit(r / WORKFLOW,
+                    'unified_job_template: "30-bmc-prepare-hosts"\n'
+                    '        parents: [{ identifier: "approve-execute", type: success }]',
+                    'unified_job_template: "30-bmc-prepare-hosts"\n'
+                    '        parents: [{ identifier: "readiness-report", type: success }]'), True)
+
+# --- multiple plays and duplicates ------------------------------------------
+case("a workflow node in a SECOND play is not ignored",
+     lambda r: (r / WORKFLOW).write_text(
+         (r / WORKFLOW).read_text()
+         + "\n- name: A second play the checker must not ignore\n"
+           "  hosts: localhost\n"
+           "  connection: local\n"
+           "  gather_facts: false\n"
+           "  tasks:\n"
+           "    - ansible.controller.workflow_job_template_node:\n"
+           '        workflow: "openshift-site-readiness"\n'
+           '        identifier: "99-sneaky"\n'
+           '        unified_job_template: "99-sneaky"\n'
+           '        parents: [{ identifier: "validate-bundle", type: success }]\n',
+         encoding="utf-8"), True)
+
+case("a duplicate workflow node identifier fails",
+     lambda r: edit(r / WORKFLOW, '        identifier: "intake"',
+                    '        identifier: "readiness-report"'), True)
+
+case("a duplicate job-template name fails",
+     lambda r: edit(r / TEMPLATES, 'name: "14-validate-bastion"',
+                    'name: "13-validate-vips"'), True)
+
 width = max(len(n) for n, _, _ in results)
 failed = 0
 print("check_workflow_consistency unit tests\n")

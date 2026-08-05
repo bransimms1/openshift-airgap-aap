@@ -273,6 +273,106 @@
         bios_installed: "unknown"
         firmware_state: UNKNOWN_INSTALLED
 
+      # --- metadata half of the pair -----------------------------------------
+      - name: valid chassis_uri metadata
+        sys: {redfish_facts: {system: {entries: [[{chassis_uri: "/redfish/v1/Chassis/1"}, {Id: "c1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: valid manager_uri metadata
+        sys: {redfish_facts: {system: {entries: [[{manager_uri: "/redfish/v1/Managers/1"}, {Id: "m1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: valid resource_uri metadata
+        sys: {redfish_facts: {system: {entries: [[{resource_uri: "/redfish/v1/Systems/1"}, {Id: "r1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "fake_uri is not recognised metadata"
+        sys: {redfish_facts: {system: {entries: [[{fake_uri: null}, {Id: "System.1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "a bare _uri key is not recognised metadata"
+        sys: {redfish_facts: {system: {entries: [[{_uri: "/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "null system_uri value must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: null}, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "blank system_uri value must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "   "}, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "numeric system_uri value must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: 12345}, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "system_uri that is not a resource path must not pass"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "not-a-path"}, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "metadata carrying system-record fields must not pass"
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - - {system_uri: "/redfish/v1/Systems/1", PowerState: "Off", Id: "LooksLikeARecord"}
+                  - {Id: "System.1", PowerState: "On"}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: false
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "an absolute https metadata uri is accepted"
+        sys: {redfish_facts: {system: {entries: [[{system_uri: "https://bmc/redfish/v1/Systems/1"}, {Id: "s1", PowerState: "On"}]]}}}
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "On"
+        firmware_state: UNKNOWN_INSTALLED
+
+      - name: "malformed metadata then a valid pair"
+        sys:
+          redfish_facts:
+            system:
+              entries:
+                - [{fake_uri: "/x"}, {Id: "bad", PowerState: "On"}]
+                - [{system_uri: "/redfish/v1/Systems/2"}, {Id: "good", PowerState: "Off"}]
+        fw: {redfish_facts: {firmware: {entries: []}}}
+        baseline: {bios_version: "2.15.1"}
+        reachable: true
+        power: "Off"
+        firmware_state: UNKNOWN_INSTALLED
+
       # --- control characters in identifiers ---------------------------------
       - name: "Id: NUL only must not pass"
         sys: {redfish_facts: {system: {entries: [[{system_uri: "/s/1"}, {Id: "\u0000", PowerState: "On"}]]}}}

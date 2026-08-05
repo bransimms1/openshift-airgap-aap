@@ -39,6 +39,23 @@ import assert_isolation_summary as summary  # noqa: E402
 
 # The readiness capabilities this project promises. Removing one must fail CI
 # however many other files agree, which is the whole point of pinning them.
+# The intended dependency stages. Membership alone would let the graph be
+# rearranged into something complete but meaningless - every readiness check
+# hanging directly off intake, say, or approval attached to a single branch.
+ROOT_CAPABILITY = "00-bundle-intake"
+BUNDLE_VALIDATION = "01-validate-bundle"
+READINESS_BRANCHES = [
+    "10-validate-dns",
+    "11-validate-ntp",
+    "12-validate-registry",
+    "13-validate-vips",
+    "14-validate-bastion",
+    "15-validate-bmc",
+]
+REPORT_CAPABILITY = "20-readiness-report"
+APPROVAL_IDENTIFIER = "approve-execute"
+EXECUTION_TEMPLATES = ["30-bmc-prepare-hosts", "31-generate-agent-iso", "32-boot-virtual-media"]
+
 REQUIRED_CAPABILITIES = [
     "00-bundle-intake",
     "01-validate-bundle",
@@ -63,12 +80,23 @@ def load(path: Path):
 
 
 def tasks_of(doc, path: Path) -> list[dict]:
-    if not isinstance(doc, list) or not doc or not isinstance(doc[0], dict):
+    """Tasks from EVERY play. Reading only doc[0] meant a second play - which
+    Automation Controller executes - was invisible to this check."""
+    if not isinstance(doc, list) or not doc:
         raise SystemExit(f"::error::{path.name} is not a playbook with at least one play")
-    tasks = doc[0].get("tasks")
-    if not isinstance(tasks, list):
-        raise SystemExit(f"::error::{path.name} play has no tasks list")
-    return [t for t in tasks if isinstance(t, dict)]
+    tasks: list[dict] = []
+    for index, play in enumerate(doc):
+        if not isinstance(play, dict):
+            raise SystemExit(f"::error::{path.name} play {index} is not a mapping")
+        play_tasks = play.get("tasks")
+        if play_tasks is None:
+            continue
+        if not isinstance(play_tasks, list):
+            raise SystemExit(f"::error::{path.name} play {index} has a non-list tasks value")
+        tasks.extend(t for t in play_tasks if isinstance(t, dict))
+    if not tasks:
+        raise SystemExit(f"::error::{path.name} defines no tasks")
+    return tasks
 
 
 def module_args(task: dict, suffix: str) -> dict | None:
@@ -102,6 +130,8 @@ def workflow_nodes(path: Path) -> dict[str, dict]:
             for name in loop:
                 if not isinstance(name, str):
                     raise SystemExit(f"::error::looped workflow node has a non-string entry: {name!r}")
+                if name in nodes:
+                    raise SystemExit(f"::error::duplicate workflow node identifier {name!r}")
                 nodes[name] = {"template": name, "parents": parents, "is_approval": False}
             continue
 
@@ -109,6 +139,8 @@ def workflow_nodes(path: Path) -> dict[str, dict]:
             raise SystemExit("::error::a workflow node has no identifier")
         if template is None and "approval_node" not in args:
             raise SystemExit(f"::error::workflow node {ident!r} has neither a template nor an approval_node")
+        if ident in nodes:
+            raise SystemExit(f"::error::duplicate workflow node identifier {ident!r}")
         nodes[ident] = {
             "template": template,
             "parents": parents,
@@ -131,10 +163,14 @@ def job_template_playbooks(path: Path) -> dict[str, str]:
             for entry in loop:
                 if not isinstance(entry, dict) or "name" not in entry or "playbook" not in entry:
                     raise SystemExit(f"::error::job-template loop entry is not name+playbook: {entry!r}")
+                if entry["name"] in found:
+                    raise SystemExit(f"::error::duplicate job template name {entry['name']!r}")
                 found[entry["name"]] = Path(entry["playbook"]).stem
         else:
             name, playbook = args.get("name"), args.get("playbook")
             if isinstance(name, str) and isinstance(playbook, str) and "{{" not in name:
+                if name in found:
+                    raise SystemExit(f"::error::duplicate job template name {name!r}")
                 found[name] = Path(playbook).stem
     if not found:
         raise SystemExit("::error::no job templates found")
@@ -151,6 +187,122 @@ def harness_playbooks(path: Path) -> list[str]:
     return [line.strip() for line in body.splitlines() if line.strip()]
 
 
+def validate_graph(nodes: dict[str, dict]) -> list[str]:
+    """Structural checks on the workflow graph itself."""
+    errs: list[str] = []
+
+    # Parents must exist. An unresolvable reference is a broken definition, not
+    # merely an unreachable node.
+    for ident, node in nodes.items():
+        for parent in node["parents"]:
+            if parent not in nodes:
+                errs.append(f"node {ident!r} names a parent {parent!r} that does not exist")
+
+    # Cycles. Nothing in a cycle can ever run.
+    colour: dict[str, int] = {}
+
+    def visit(ident: str, trail: list[str]) -> None:
+        if colour.get(ident) == 2:
+            return
+        if colour.get(ident) == 1:
+            cycle = trail[trail.index(ident):] + [ident]
+            errs.append(f"workflow graph has a cycle: {' -> '.join(cycle)}")
+            return
+        colour[ident] = 1
+        for parent in nodes[ident]["parents"]:
+            if parent in nodes:
+                visit(parent, trail + [ident])
+        colour[ident] = 2
+
+    for ident in nodes:
+        visit(ident, [])
+    if any("cycle" in e for e in errs):
+        return errs  # reachability is meaningless once the graph is cyclic
+
+    # Exactly one approval node, with the expected identifier.
+    approvals = sorted(i for i, n in nodes.items() if n["is_approval"])
+    if len(approvals) != 1:
+        errs.append(f"expected exactly one approval node, found {approvals or 'none'}")
+    elif approvals[0] != APPROVAL_IDENTIFIER:
+        errs.append(f"approval node is {approvals[0]!r}, expected {APPROVAL_IDENTIFIER!r}")
+
+    return errs
+
+
+def ancestors(nodes: dict[str, dict], ident: str) -> set[str]:
+    """Every node upstream of `ident`."""
+    seen: set[str] = set()
+    stack = list(nodes[ident]["parents"]) if ident in nodes else []
+    while stack:
+        current = stack.pop()
+        if current in seen or current not in nodes:
+            continue
+        seen.add(current)
+        stack.extend(nodes[current]["parents"])
+    return seen
+
+
+def validate_stages(nodes: dict[str, dict], pre: set[str]) -> list[str]:
+    """Prove the intended dependency stages, without imposing an ordering
+    among the parallel readiness branches."""
+    errs: list[str] = []
+    by_template = {n["template"]: i for i, n in nodes.items() if n["template"]}
+
+    def node_for(template: str) -> str | None:
+        return by_template.get(template)
+
+    root = node_for(ROOT_CAPABILITY)
+    if root is None:
+        return [f"{ROOT_CAPABILITY!r} is not in the workflow"]
+
+    # Exactly one readiness root, and it is intake.
+    roots = sorted(i for i in pre if not nodes[i]["parents"])
+    if roots != [root]:
+        errs.append(
+            f"expected {root!r} to be the only readiness node without parents, found {roots}"
+        )
+
+    # Every readiness node reachable from intake.
+    for ident in sorted(pre):
+        if ident != root and root not in ancestors(nodes, ident):
+            errs.append(f"readiness node {ident!r} is not reachable from {ROOT_CAPABILITY!r}")
+
+    validation = node_for(BUNDLE_VALIDATION)
+    report = node_for(REPORT_CAPABILITY)
+    if validation is None or report is None:
+        return errs + [f"{BUNDLE_VALIDATION!r} or {REPORT_CAPABILITY!r} is not in the workflow"]
+
+    if root not in ancestors(nodes, validation):
+        errs.append(f"{BUNDLE_VALIDATION!r} does not depend on {ROOT_CAPABILITY!r}")
+
+    for template in READINESS_BRANCHES:
+        branch = node_for(template)
+        if branch is None:
+            errs.append(f"readiness branch {template!r} is not in the workflow")
+            continue
+        if validation not in ancestors(nodes, branch):
+            errs.append(f"readiness branch {template!r} does not depend on {BUNDLE_VALIDATION!r}")
+        if branch not in ancestors(nodes, report):
+            errs.append(f"{REPORT_CAPABILITY!r} does not depend on branch {template!r}")
+
+    if APPROVAL_IDENTIFIER in nodes:
+        approval_parents = ancestors(nodes, APPROVAL_IDENTIFIER)
+        if report not in approval_parents:
+            errs.append(f"the approval node does not depend on {REPORT_CAPABILITY!r}")
+        for ident in sorted(pre):
+            if ident in approval_parents or ident == report:
+                continue
+        # Execution must be downstream of approval, with no bypass path.
+        for template in EXECUTION_TEMPLATES:
+            execution = node_for(template)
+            if execution is None:
+                errs.append(f"execution node {template!r} is not in the workflow")
+            elif APPROVAL_IDENTIFIER not in ancestors(nodes, execution):
+                errs.append(f"execution node {template!r} is not downstream of the approval node")
+
+    return errs
+
+
 def pre_approval(nodes: dict[str, dict]) -> set[str]:
     """Nodes that are not the approval node and are not downstream of it."""
     approvals = {i for i, n in nodes.items() if n["is_approval"]}
@@ -165,13 +317,20 @@ def pre_approval(nodes: dict[str, dict]) -> set[str]:
 
 
 def check() -> list[str]:
-    errs: list[str] = []
     nodes = workflow_nodes(ROOT / "controller" / "workflow_templates.yml")
     templates = job_template_playbooks(ROOT / "controller" / "job_templates.yml")
+
+    # Graph shape first: membership checks on a cyclic or disconnected graph
+    # would report confusing secondary failures.
+    errs = validate_graph(nodes)
+    if errs:
+        return errs
 
     readiness = sorted(
         nodes[i]["template"] for i in pre_approval(nodes) if nodes[i]["template"]
     )
+
+    errs += validate_stages(nodes, pre_approval(nodes))
 
     # 1. Required capabilities must all be present, whatever else changed.
     for capability in REQUIRED_CAPABILITIES:

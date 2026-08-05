@@ -63,19 +63,25 @@
     # first: the /v2/ probe below loops over all of them, so a malformed second
     # host would otherwise reach the network as a nonsense URL. This runs before
     # any network module, and names the value and the accepted forms.
-    - name: Validate every mirror host
+    - name: Reset the normalised endpoint list
+      ansible.builtin.set_fact:
+        _mirror_endpoints: []
+
+    - name: Validate every mirror host and record its normalised endpoint
       ansible.builtin.include_tasks: tasks/mirror_host_validate.yml
       loop: "{{ mirror_hosts }}"
       loop_control:
         loop_var: _mh
         label: "{{ _mh }}"
 
-    # The certificate is read from the first host, so its parse is the one that
-    # must survive the loop above.
-    - name: Parse the mirror host the certificate is read from
-      ansible.builtin.include_tasks: tasks/mirror_host_validate.yml
-      vars:
-        _mh: "{{ mirror_hosts[0] }}"
+    # Every probe below uses these, never the raw entry, so the certificate read
+    # and the HTTP probes cannot target different spellings of one endpoint.
+    - name: Bind the endpoint the certificate is read from
+      ansible.builtin.set_fact:
+        _mirror_authorities: "{{ _mirror_endpoints | map(attribute='authority') | list }}"
+        _registry_hostname: "{{ _mirror_endpoints[0].hostname }}"
+        _registry_port: "{{ _mirror_endpoints[0].port }}"
+        _registry_authority: "{{ _mirror_endpoints[0].authority }}"
 
     - name: Create this job's scratch directory
       ansible.builtin.file:
@@ -95,7 +101,7 @@
         ca_path: "{{ registry_workdir }}/trust-bundle.pem"
         validate_certs: true
         status_code: [200, 401]   # 401 is fine - it means TLS and routing work
-      loop: "{{ mirror_hosts }}"
+      loop: "{{ _mirror_authorities }}"
       register: _reg
       failed_when: false
 
@@ -111,7 +117,7 @@
     # stop, so it is treated as a failure.
     - name: Confirm the release payload for this version exists in the mirror
       ansible.builtin.uri:
-        url: "https://{{ mirror_hosts[0] }}/v2/openshift/release-images/tags/list"
+        url: "https://{{ _registry_authority }}/v2/openshift/release-images/tags/list"
         ca_path: "{{ registry_workdir }}/trust-bundle.pem"
         status_code: [200, 401]
       register: _payload
@@ -121,15 +127,17 @@
     # exercised against fixture data by demo/tests/registry_verdict.yml.
     - name: Grade the probe results
       ansible.builtin.include_tasks: tasks/registry_verdict.yml
+      vars:
+        mirror_hosts: "{{ _mirror_authorities }}"
 
     - name: Publish result
       ansible.builtin.set_stats:
         data:
           check_registry:
             status: "{{ _registry_status }}"
-            hosts: "{{ mirror_hosts }}"
+            hosts: "{{ _mirror_authorities }}"
             unreachable: "{{ _unreachable_hosts }}"
-            cert_host: "{{ _registry_hostname }}:{{ _registry_port }}"
+            cert_host: "{{ _registry_authority }}"
             cert_expires: "{{ _cert.not_after | default('unknown') }}"
             cert_retrieved: "{{ _cert_ok }}"
             release_probe: "{{ _payload.status | default('n/a') }}"

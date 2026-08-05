@@ -22,3 +22,13 @@
       Accepted forms: host, host:port, ipv4, ipv4:port, ipv6,
       [ipv6] or [ipv6]:port. No scheme, path, query or fragment.
   when: _mirror_host_error | length > 0
+
+# Accumulated so the caller probes normalised endpoints rather than the raw
+# entries. Appended after the rejection above, so only valid hosts land here.
+- name: Record the normalised endpoint
+  ansible.builtin.set_fact:
+    _mirror_endpoints: >-
+      {{ (_mirror_endpoints | default([]))
+         + [{'authority': _registry_authority,
+             'hostname': _registry_hostname,
+             'port': _registry_port | int}] }}

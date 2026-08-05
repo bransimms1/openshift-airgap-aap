@@ -8,7 +8,9 @@
 #   _reg              registered uri result, looped over mirror_hosts
 #   _cert             registered get_certificate result
 #   _payload          registered uri result for the release tags list
-#   mirror_hosts      the configured hosts, so results can be tied back to them
+#   mirror_hosts      the configured hosts - normalised authorities in
+#                     production, raw strings in the fixture tests - so results
+#                     can be tied back to them
 #
 # Outputs:
 #   _reg_results        the probe results, normalised to a list of mappings

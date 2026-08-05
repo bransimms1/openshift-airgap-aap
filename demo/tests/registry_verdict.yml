@@ -46,6 +46,10 @@
       - {host: "[2001:db8::1]notaport", error_contains: "trailing text"}
       # --- trailing root dot -------------------------------------------------
       - {host: "registry.example.com.", hostname: "registry.example.com", port: "8443", error: ""}
+      # A trailing dot on an IP literal is DNS notation applied to something
+      # that is not a DNS name - deliberately rejected, not normalised.
+      - {host: "10.42.10.5.", error_contains: "trailing dot is DNS notation"}
+      - {host: "[::1].", error_contains: "trailing text"}
       - {host: "REGISTRY.EXAMPLE.COM.", hostname: "REGISTRY.EXAMPLE.COM", port: "8443", error: ""}
       - {host: "registry.example.com.:8443", hostname: "registry.example.com", port: "8443", error: ""}
       - {host: "registry.example.com..", error_contains: "not a hostname"}

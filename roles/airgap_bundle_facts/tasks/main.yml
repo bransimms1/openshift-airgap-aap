@@ -139,6 +139,22 @@
     ac: "{{ _bundle_yaml['agent-config.yaml'] }}"
   when: "'agent-config.yaml' in _bundle_yaml"
 
+# Nothing may read a child of these until the roots are known to be mappings.
+# A document that parses to null, a sequence or a scalar would otherwise raise
+# on the first attribute access, outside any controlled assertion.
+- name: Each bundle document must parse to a YAML mapping
+  ansible.builtin.assert:
+    that:
+      - ic is mapping
+      - isc is mapping
+      - ac is not defined or ac is mapping
+    fail_msg: >-
+      Each bundle document must parse to a YAML mapping.
+      install-config.yaml is {{ 'null' if ic is none else (ic | type_debug) }};
+      imageset-config.yaml is {{ 'null' if isc is none else (isc | type_debug) }};
+      agent-config.yaml is
+      {{ 'absent' if ac is not defined else ('null' if ac is none else (ac | type_debug)) }}.
+
 - name: Assert the imageset is oc-mirror v2 format
   ansible.builtin.assert:
     that: isc.apiVersion is search('v2alpha1')
@@ -169,18 +185,50 @@
              if (ic.platform | default({}, true)) is mapping else {} }}"
     _net: "{{ ic.networking | default({}, true) }}"
 
+- name: The cluster must have a usable name and base domain
+  ansible.builtin.assert:
+    that:
+      - ic.metadata is defined
+      - ic.metadata is mapping
+      - ic.metadata.name is defined
+      - ic.metadata.name is string
+      - (ic.metadata.name | trim | length) > 0
+      - ic.baseDomain is defined
+      - ic.baseDomain is string
+      - (ic.baseDomain | trim | length) > 0
+    fail_msg: >-
+      install-config.yaml must declare metadata.name and baseDomain as non-blank
+      strings; every DNS expectation is derived from them.
+      Got metadata={{ ic.metadata | default('undefined') }},
+      baseDomain={{ ic.baseDomain | default('undefined') }}.
+
 - name: The bundle must declare a bare-metal platform with VIPs and a machine network
   ansible.builtin.assert:
     that:
       - _ic_baremetal | length > 0
       - (_ic_baremetal.apiVIPs | default([], true)) | length > 0
       - (_ic_baremetal.ingressVIPs | default([], true)) | length > 0
-      - (_ic_networking.machineNetwork | default([], true)) | length > 0
+      - _ic_machine_network | length > 0
+      # Every entry must be a mapping carrying a non-blank cidr: the derivation
+      # below maps over the cidr attribute, which raises on a bare string.
+      - (_ic_machine_network | select('mapping') | list | length) == (_ic_machine_network | length)
+      - (_ic_machine_network | selectattr('cidr', 'defined') | list | length) == (_ic_machine_network | length)
+      - (_ic_machine_network | map(attribute='cidr') | select('string')
+         | map('trim') | select('truthy') | list | length) == (_ic_machine_network | length)
+      # ansible.utils is already required by this role's CIDR overlap checks.
+      - (_ic_machine_network | map(attribute='cidr')
+         | map('ansible.utils.ipaddr') | select('truthy') | list | length) == (_ic_machine_network | length)
     fail_msg: >-
       install-config.yaml does not declare a usable bare-metal platform.
       platform.baremetal must be a mapping with apiVIPs and ingressVIPs, and
-      networking.machineNetwork must list at least one CIDR.
-      Got platform={{ ic.platform | default('undefined') }}.
+      networking.machineNetwork must be a list of mappings each carrying a
+      syntactically valid cidr.
+      Got platform={{ ic.platform | default('undefined') }},
+      machineNetwork={{ _ic_networking.machineNetwork | default('undefined') }}.
+  vars:
+    _mn: "{{ _ic_networking.machineNetwork | default([], true) }}"
+    _ic_machine_network: >-
+      {{ _mn if (_mn is sequence and _mn is not string and _mn is not mapping) else [] }}
 
 - name: Derive the facts every downstream check depends on
   ansible.builtin.set_fact:
@@ -191,7 +239,7 @@
     ingress_vips: "{{ _ic_baremetal.ingressVIPs | default([], true) }}"
     machine_networks: >-
       {{ (_ic_networking.machineNetwork | default([], true))
-         | map(attribute='cidr') | list }}
+         | map(attribute='cidr') | map('trim') | list }}
     ntp_sources: "{{ (ac.additionalNTPSources | default([], true)) if ac is defined else [] }}"
     rendezvous_ip: "{{ ac.rendezvousIP | default(omit) if ac is defined else omit }}"
     trust_bundle: "{{ ic.additionalTrustBundle | default('', true) }}"

@@ -14,6 +14,10 @@
 # Outputs:
 #   _registry_hostname  the address, with IPv6 brackets removed
 #   _registry_port      the port, or registry_port_default when none is given
+#   _registry_authority the normalised host:port used to build every URL, with
+#                       IPv6 re-bracketed. EVERY network operation uses this, so
+#                       the /v2/ probe, the certificate read and the payload
+#                       probe cannot target different spellings of one endpoint.
 #   _mirror_host_error  '' when valid, otherwise why it was rejected
 #
 # Accepted forms:
@@ -22,10 +26,14 @@
 #   registry.example.com.         (one trailing         [2001:db8::1]:8443
 #                                  root dot, normalised away)
 #
-# A single trailing root dot is accepted - it is a normal fully qualified DNS
-# representation - and removed before the address is used or compared, so
-# 'registry.example.com.' and 'registry.example.com' are one endpoint.
+# A single trailing root dot is accepted on a DNS NAME - it is a normal fully
+# qualified representation - and removed before the address is used or compared,
+# so 'registry.example.com.' and 'registry.example.com' are one endpoint.
 # 'registry.example.com..' and '.example.com' are rejected.
+#
+# A trailing dot on an IP LITERAL is rejected: '10.42.10.5.' is DNS notation
+# applied to something that is not a DNS name, and accepting it would mean two
+# spellings of one address. Deliberate choice, tested.
 #
 # DNS length limits are enforced: each label 1-63 characters, and the whole
 # name at most 253.
@@ -51,6 +59,11 @@
     # Everything after the closing bracket, so trailing junk can be rejected
     # rather than silently ignored by the slice.
     _mh_after_bracket: "{{ _mh_raw.split(']', 1)[1] if ']' in _mh_raw else '' }}"
+    # Recorded before the dot is stripped, so an IP literal written with one can
+    # be rejected rather than silently normalised.
+    _mh_had_trailing_dot: >-
+      {{ (_mh_raw[1:_mh_raw.index(']')] if _mh_raw.startswith('[') and ']' in _mh_raw
+          else (_mh_raw.split(':')[0] if _mh_raw.count(':') == 1 else _mh_raw)).endswith('.') }}
     # A single trailing root dot is stripped here so everything downstream -
     # the certificate endpoint, the published cert_host, and the identity
     # comparison in registry_verdict.yml - sees one canonical spelling.
@@ -121,6 +134,11 @@
                and not _mh_is_ipv6 | bool) else '' }}
       # Otherwise it must be a hostname or an IPv4 address.
       - >-
+        {{ 'a trailing dot is DNS notation and is not accepted on an IP address: '
+           ~ _mh_raw
+           if (_mh_had_trailing_dot | bool
+               and (_mh_is_ipv4 | bool or _mh_is_ipv6 | bool)) else '' }}
+      - >-
         {{ 'a DNS label may not exceed 63 characters: ' ~ _registry_hostname
            if (not _mh_raw.startswith('[') and _mh_raw.count(':') <= 1
                and not (_mh_is_ipv4 | bool) and _mh_label_shape_ok | bool
@@ -142,3 +160,14 @@
         {{ 'port out of range 1-65535: ' ~ _registry_port
            if ((_registry_port | string).isdigit()
                and ((_registry_port | int) < 1 or (_registry_port | int) > 65535)) else '' }}
+
+# One authority string, built from the normalised parts, so nothing downstream
+# has to re-derive it from the raw entry. IPv6 is re-bracketed because a URL
+# authority requires it.
+- name: Build the normalised URL authority
+  ansible.builtin.set_fact:
+    _registry_authority: >-
+      {{ ('[' ~ _registry_hostname ~ ']:' ~ _registry_port)
+         if (_registry_hostname | default('') | length > 0
+             and ':' in (_registry_hostname | default('')))
+         else (_registry_hostname ~ ':' ~ _registry_port) }}

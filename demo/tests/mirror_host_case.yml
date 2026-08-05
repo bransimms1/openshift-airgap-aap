@@ -14,7 +14,11 @@
       - _mirror_host_error | length == 0
       - _registry_hostname == addr.hostname
       - (_registry_port | string) == addr.port
-    success_msg: "ok: {{ addr.host }} -> {{ _registry_hostname }} port {{ _registry_port }}"
+      # The authority every probe URL is built from. IPv6 is re-bracketed.
+      - _registry_authority == (('[' ~ addr.hostname ~ ']:' ~ addr.port)
+                                if ':' in addr.hostname
+                                else (addr.hostname ~ ':' ~ addr.port))
+    success_msg: "ok: {{ addr.host }} -> {{ _registry_authority }}"
     fail_msg: >-
       FAILED: {{ addr.host }} -> {{ _registry_hostname }} port {{ _registry_port }}
       error={{ _mirror_host_error }}, wanted {{ addr.hostname }}:{{ addr.port }}

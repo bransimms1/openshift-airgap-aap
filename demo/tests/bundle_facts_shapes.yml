@@ -8,19 +8,83 @@
   connection: local
   gather_facts: false
   vars:
+    _valid_isc: {apiVersion: "mirror.openshift.io/v2alpha1"}
+    # Valid fragments, referenced by the cases below so no line has to carry a
+    # whole install-config inline.
+    _vp: &vp
+      baremetal:
+        apiVIPs: ["10.42.10.5"]
+        ingressVIPs: ["10.42.10.6"]
+    _vn: &vn
+      machineNetwork:
+        - cidr: "10.42.10.0/24"
+    _vmeta: &vmeta {name: c}
     cases:
+      # --- shapes that MUST be accepted --------------------------------------
+      - name: "valid IPv4 bundle"
+        expect: accept
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: *vn}
+      - name: "valid IPv6 machine network"
+        expect: accept
+        ic:
+          metadata: {name: c}
+          baseDomain: e.com
+          platform: {baremetal: {apiVIPs: ["2001:db8::5"], ingressVIPs: ["2001:db8::6"]}}
+          networking: {machineNetwork: [{cidr: "2001:db8::/64"}]}
+      - name: "agent-config absent is fine"
+        expect: accept
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: *vn}
+
+      # --- document roots ----------------------------------------------------
+      - {name: "ic is null", ic: null}
+      - {name: "ic is a sequence", ic: [not, a, mapping]}
+      - {name: "ic is a string", ic: "install-config"}
+      - {name: "isc is null", ic: {metadata: {name: c}, baseDomain: e.com}, isc: null}
+      - {name: "isc is a sequence", ic: {metadata: {name: c}, baseDomain: e.com}, isc: [a]}
+      # --- cluster identity --------------------------------------------------
+      - name: "metadata is null"
+        ic: {metadata: null, baseDomain: e.com, platform: *vp, networking: *vn}
+      - name: "metadata is a sequence"
+        ic: {metadata: [], baseDomain: e.com, platform: *vp, networking: *vn}
+      - name: "metadata is absent"
+        ic: {baseDomain: e.com, platform: *vp, networking: *vn}
+      - name: "metadata.name is absent"
+        ic: {metadata: {}, baseDomain: e.com, platform: *vp, networking: *vn}
+      - name: "metadata.name is blank"
+        ic: {metadata: {name: "   "}, baseDomain: e.com, platform: *vp, networking: *vn}
+      - name: "baseDomain is null"
+        ic: {metadata: *vmeta, baseDomain: null, platform: *vp, networking: *vn}
+      - name: "baseDomain is blank"
+        ic: {metadata: *vmeta, baseDomain: "  ", platform: *vp, networking: *vn}
+      # --- machineNetwork shape ----------------------------------------------
+      - name: "machineNetwork is a string"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: "10.42.10.0/24"}}
+      - name: "machineNetwork is a mapping"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: {cidr: "10.42.10.0/24"}}}
+      - name: "machineNetwork contains a bare string"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: ["not-a-mapping"]}}
+      - name: "machineNetwork contains null"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: [null]}}
+      - name: "machineNetwork entry has no cidr"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: [{prefix: 24}]}}
+      - name: "cidr is null"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: [{cidr: null}]}}
+      - name: "cidr is blank"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: [{cidr: "  "}]}}
+      - name: "cidr is not a valid network"
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: *vp, networking: {machineNetwork: [{cidr: "not-a-cidr"}]}}
       - name: "platform.baremetal is null"
-        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: null}}
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: {baremetal: null}}
       - name: "platform is null"
-        ic: {metadata: {name: c}, baseDomain: e.com, platform: null}
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: null}
       - name: "platform.baremetal is a list"
-        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: []}}
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: {baremetal: []}}
       - name: "platform.baremetal is a string"
-        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: "invalid"}}
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: {baremetal: "invalid"}}
       - name: "platform is absent entirely"
-        ic: {metadata: {name: c}, baseDomain: e.com}
+        ic: {metadata: *vmeta, baseDomain: e.com}
       - name: "baremetal present but VIPs missing"
-        ic: {metadata: {name: c}, baseDomain: e.com, platform: {baremetal: {}}}
+        ic: {metadata: *vmeta, baseDomain: e.com, platform: {baremetal: {}}}
       - name: "networking is null"
         ic:
           metadata: {name: c}
@@ -60,4 +124,8 @@
 
     - name: Report
       ansible.builtin.debug:
-        msg: "{{ cases | length }} malformed bundle shapes handled, plus the null accumulator."
+        msg: >-
+          {{ cases | length }} bundle shapes graded
+          ({{ cases | selectattr("expect", "defined") | list | length }} accepted,
+          {{ cases | rejectattr("expect", "defined") | list | length }} rejected),
+          plus the null accumulator.

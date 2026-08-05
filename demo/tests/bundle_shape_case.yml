@@ -1,37 +1,76 @@
 ---
-# One malformed install-config shape. The normalisation and assertion are the
-# same expressions roles/airgap_bundle_facts/tasks/main.yml uses.
+# One install-config shape. The normalisation and assertions are the same
+# expressions roles/airgap_bundle_facts/tasks/main.yml uses, in the same order.
+#
+# case.expect is 'reject' (default) or 'accept'. A rejected case must fail the
+# ASSERTION, not raise a templating error - that distinction is the point of
+# these tests.
 
 - name: Normalise the nested objects
   ansible.builtin.set_fact:
-    _ic_platform: "{{ _p if _p is mapping else {} }}"
     _ic_baremetal: "{{ _bm if _bm is mapping else {} }}"
-    _ic_networking: "{{ _net if _net is mapping else {} }}"
+    _ic_machine_network: >-
+      {{ _mn if (_mn is sequence and _mn is not string and _mn is not mapping) else [] }}
   vars:
     ic: "{{ case.ic }}"
-    _p: "{{ ic.platform | default({}, true) }}"
-    _bm: "{{ (ic.platform | default({}, true)).baremetal | default({}, true)
-             if (ic.platform | default({}, true)) is mapping else {} }}"
-    _net: "{{ ic.networking | default({}, true) }}"
+    _p: "{{ ic.platform | default({}, true) if ic is mapping else {} }}"
+    _bm: "{{ _p.baremetal | default({}, true) if _p is mapping else {} }}"
+    _net: "{{ ic.networking | default({}, true) if ic is mapping else {} }}"
+    _mn: "{{ _net.machineNetwork | default([], true) if _net is mapping else [] }}"
 
-- name: The schema assertion must fail, and fail cleanly
+- name: Apply the shipped assertions in order
   block:
-    - name: Apply the shipped assertion
+    - name: Roots, then identity, then platform and network
       ansible.builtin.assert:
         that:
+          # Roots first: nothing may read a child before these hold.
+          - ic is mapping
+          - isc is mapping
+          - ac is not defined or ac is mapping
+          # Cluster identity.
+          - ic.metadata is defined
+          - ic.metadata is mapping
+          - ic.metadata.name is defined
+          - ic.metadata.name is string
+          - (ic.metadata.name | trim | length) > 0
+          - ic.baseDomain is defined
+          - ic.baseDomain is string
+          - (ic.baseDomain | trim | length) > 0
+          # Platform and machine network.
           - _ic_baremetal | length > 0
           - (_ic_baremetal.apiVIPs | default([], true)) | length > 0
           - (_ic_baremetal.ingressVIPs | default([], true)) | length > 0
-          - (_ic_networking.machineNetwork | default([], true)) | length > 0
+          - _ic_machine_network | length > 0
+          - (_ic_machine_network | select('mapping') | list | length) == (_ic_machine_network | length)
+          - (_ic_machine_network | selectattr('cidr', 'defined') | list | length) == (_ic_machine_network | length)
+          - (_ic_machine_network | map(attribute='cidr') | select('string')
+             | map('trim') | select('truthy') | list | length) == (_ic_machine_network | length)
+          - (_ic_machine_network | map(attribute='cidr')
+             | map('ansible.utils.ipaddr') | select('truthy') | list | length) == (_ic_machine_network | length)
         fail_msg: "schema assertion (expected)"
-    - name: Reaching here means the malformed shape was accepted
+      vars:
+        ic: "{{ case.ic }}"
+        isc: "{{ case.isc | default(_valid_isc) }}"
+
+    - name: An accepted case reaching here is correct
+      ansible.builtin.debug:
+        msg: "ok: {{ case.name }} -> accepted"
+      when: (case.expect | default('reject')) == 'accept'
+
+    - name: A rejected case must not reach here
       ansible.builtin.fail:
         msg: "FAILED: {{ case.name }} was accepted by the schema assertion"
+      when: (case.expect | default('reject')) != 'accept'
+
   rescue:
     - name: Confirm it was the assertion that failed, not a templating error
       ansible.builtin.assert:
-        that: "'schema assertion (expected)' in (ansible_failed_result.msg | default(''))"
+        that:
+          - (case.expect | default('reject')) != 'accept'
+          - "'schema assertion (expected)' in (ansible_failed_result.msg | default(''))"
         success_msg: "ok: {{ case.name }} -> controlled schema failure"
         fail_msg: >-
-          FAILED: {{ case.name }} raised something other than the schema
-          assertion: {{ ansible_failed_result.msg | default('') | truncate(120) }}
+          FAILED: {{ case.name }} -
+          {{ 'was rejected but should be accepted' if (case.expect | default('reject')) == 'accept'
+             else 'raised something other than the schema assertion' }}:
+          {{ ansible_failed_result.msg | default('') | truncate(140) }}

@@ -44,6 +44,13 @@
     # Redfish PowerState enumeration. Override bmc_power_states for a vendor
     # that reports something outside it.
     _bmc_default_power_states: ['On', 'Off', 'PoweringOn', 'PoweringOff', 'Paused']
+    # The metadata half of each entry pair. community.general builds it in
+    # _redfish_utils.aggregate() as a SINGLE-KEY mapping {uri_name: uri}, where
+    # uri_name is one of these four - system_uri, chassis_uri and manager_uri
+    # from aggregate_systems/chassis/managers, resource_uri from the two
+    # commands that call entries.append directly. The value is an @odata.id,
+    # so a Redfish resource path such as /redfish/v1/Systems/1.
+    _bmc_metadata_keys: ['system_uri', 'chassis_uri', 'manager_uri', 'resource_uri']
     _bmc_candidates: []
     _bmc_usable: []
 
@@ -59,6 +66,14 @@
     label: "{{ (item | last).Id | default('entry') if item is sequence and item is not string else 'malformed' }}"
   vars:
     _bmc_entries_in: "{{ _sys.redfish_facts.system.entries | default([], true) }}"
+    # The single metadata value, or '' when the shape is wrong; guarded so the
+    # conditions above can test it without raising on a malformed entry.
+    _bmc_pair_uri: >-
+      {{ ((item | first).values() | list | first) | default('', true)
+         if (item is sequence and item is not string and item is not mapping
+             and (item | length) == 2 and (item | first) is mapping
+             and ((item | first).keys() | list | length) > 0)
+         else '' }}
     # A string or mapping here would otherwise be iterated character- or
     # key-wise by the loop.
     _bmc_entries_raw: >-
@@ -73,13 +88,17 @@
     # Exactly two elements: a one-element list holding a valid-looking record
     # is still not the documented shape.
     - (item | length) == 2
-    # community.general builds each entry as ({uri_name: uri}, record), where
-    # uri_name is system_uri, chassis_uri or manager_uri - see
-    # _redfish_utils.aggregate(). Requiring that key rejects a reversed pair,
-    # where both elements are system records and the first would otherwise be
-    # taken as metadata.
+    # The first element must be the metadata mapping the module actually
+    # produces: only recognised keys, and a URI that is a non-blank string
+    # naming a resource path. Accepting anything ending in _uri let fake_uri
+    # through, and accepting extra keys let a second system record pose as
+    # metadata.
     - (item | first) is mapping
-    - ((item | first).keys() | select('search', '_uri$') | list | length) > 0
+    - ((item | first).keys() | list | length) > 0
+    - ((item | first).keys() | reject('in', _bmc_metadata_keys) | list | length) == 0
+    - _bmc_pair_uri is string
+    - (_bmc_pair_uri | trim | length) > 0
+    - _bmc_pair_uri is match('^/') or _bmc_pair_uri is search('^[A-Za-z][A-Za-z0-9+.-]*://')
     - (item | last) is mapping
 
 # A record is usable only if the downstream workflow could act on it, and that
