@@ -243,6 +243,14 @@ jobs:
         run: python3 .github/scripts/test_repo_checks.py
       - name: isolation summary assertion unit tests
         run: python3 .github/scripts/test_assert_isolation_summary.py
+      # The harness node list and the CI assertion are hand-maintained. Edited
+      # together they agree with each other while drifting from the workflow the
+      # platform actually runs, so both are compared against
+      # controller/workflow_templates.yml.
+      - name: harness matches the Controller workflow
+        run: python3 .github/scripts/check_workflow_consistency.py
+      - name: workflow consistency unit tests
+        run: python3 .github/scripts/test_check_workflow_consistency.py
       - name: Docs, fixtures and build instructions match the tree
         run: python3 .github/scripts/repo_checks.py
 

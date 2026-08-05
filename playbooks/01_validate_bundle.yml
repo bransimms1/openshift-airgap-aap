@@ -91,7 +91,7 @@
         fail_msg: >-
           {{ item.hostname }} has no rootDeviceHints. RHCOS will pick a device,
           and on a machine with a RAID volume and local NVMe that is a coin flip.
-      loop: "{{ ac.hosts | default([]) }}"
+      loop: "{{ ac.hosts | default([], true) }}"
       loop_control:
         label: "{{ item.hostname }}"
 

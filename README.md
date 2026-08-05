@@ -213,10 +213,12 @@ below — the definitions expect several objects to exist already.
 
 ## Controller-as-code prerequisites
 
-`controller/` defines job templates, the workflow, the survey, a custom
-credential type and notifications. It does **not** create the objects those
-definitions reference. Create these first, with these names, or override the
-variables shown.
+The standard bootstrap creates the custom credential type, the job templates and
+the workflow. `controller/notifications.yml` is **optional** and is applied
+separately, only when you have a webhook endpoint for it — see below.
+
+None of these playbooks create the objects they reference. Create these first,
+with these names, or override the variables shown.
 
 | Prerequisite | Default name | Override |
 |---|---|---|

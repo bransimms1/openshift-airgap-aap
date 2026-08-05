@@ -18,7 +18,7 @@
     # the execution environment. The bundle is remote and uses slurp.
     - name: DEMO — load the fixture zone
       ansible.builtin.set_fact:
-        _zone: "{{ (lookup('file', demo_dns_fixture) | from_yaml).zone | default({}) }}"
+        _zone: "{{ (lookup('file', demo_dns_fixture) | from_yaml).zone | default({}, true) }}"
       when: demo_mode | default(false) | bool
 
     - name: DEMO — resolve every required record against the fixture
@@ -27,8 +27,8 @@
           {{ dns_results | default([]) + [{
                'name': item.name,
                'why': item.why | default('node record must resolve'),
-               'expect': item.expect | default([]),
-               'actual': _zone[item.name] | default([])
+               'expect': item.expect | default([], true),
+               'actual': _zone[item.name] | default([], true)
              }] }}
       loop: "{{ expected_dns }}"
       loop_control:
@@ -44,7 +44,7 @@
           {{ dns_results | default([]) + [{
                'name': item.name,
                'why': item.why | default('node record must resolve'),
-               'expect': item.expect | default([]),
+               'expect': item.expect | default([], true),
                'actual': (lookup('community.general.dig', item.name,
                                  '@' ~ dns_servers[0], qtype='A',
                                  errors='ignore') | default('', true))
@@ -94,7 +94,7 @@
           check_dns:
             status: "{{ 'FAIL' if (dns_graded | selectattr('status', 'eq', 'FAIL') | list | length > 0) else 'PASS' }}"
             mode: "{{ 'fixture' if demo_mode | default(false) | bool else 'live' }}"
-            resolvers: "{{ dns_servers | default([]) }}"
+            resolvers: "{{ dns_servers | default([], true) }}"
             records: "{{ dns_graded }}"
             failed_records: "{{ dns_graded | selectattr('status', 'eq', 'FAIL') | map(attribute='name') | list }}"
 

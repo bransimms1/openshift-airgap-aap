@@ -2,6 +2,9 @@
 # One mirror-host fixture: parse it with the shipped logic, then assert.
 # Included once per address by demo/tests/registry_verdict.yml.
 
+# The parse file only computes _mirror_host_error; production wraps it in
+# mirror_host_validate.yml, which fails unconditionally. The tests inspect the
+# error rather than needing a bypass to exist.
 - name: Parse the address with the shipped rules
   ansible.builtin.include_tasks: ../../playbooks/tasks/mirror_host_parse.yml
 

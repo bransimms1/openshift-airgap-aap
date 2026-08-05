@@ -153,14 +153,14 @@
     cluster_name: "{{ ic.metadata.name }}"
     base_domain: "{{ ic.baseDomain }}"
     cluster_fqdn: "{{ ic.metadata.name }}.{{ ic.baseDomain }}"
-    api_vips: "{{ ic.platform.baremetal.apiVIPs | default([]) }}"
-    ingress_vips: "{{ ic.platform.baremetal.ingressVIPs | default([]) }}"
+    api_vips: "{{ ic.platform.baremetal.apiVIPs | default([], true) }}"
+    ingress_vips: "{{ ic.platform.baremetal.ingressVIPs | default([], true) }}"
     machine_networks: "{{ ic.networking.machineNetwork | map(attribute='cidr') | list }}"
-    ntp_sources: "{{ (ac.additionalNTPSources | default([])) if ac is defined else [] }}"
+    ntp_sources: "{{ (ac.additionalNTPSources | default([], true)) if ac is defined else [] }}"
     rendezvous_ip: "{{ ac.rendezvousIP | default(omit) if ac is defined else omit }}"
-    trust_bundle: "{{ ic.additionalTrustBundle | default('') }}"
+    trust_bundle: "{{ ic.additionalTrustBundle | default('', true) }}"
     mirror_hosts: >-
-      {{ (ic.imageDigestSources | default(ic.imageContentSources | default([])))
+      {{ (ic.imageDigestSources | default(ic.imageContentSources | default([], true), true))
          | map(attribute='mirrors') | flatten | map('split', '/') | map('first')
          | unique | list }}
     ocp_release: "{{ isc.mirror.platform.channels[0].minVersion | default('unknown') }}"
@@ -184,7 +184,7 @@
            'expect': [],
            'why': 'node record must resolve'
          }] }}
-  loop: "{{ ac.hosts | default([]) }}"
+  loop: "{{ ac.hosts | default([], true) }}"
   loop_control:
     label: "{{ item.hostname }}"
   when: ac is defined
@@ -196,9 +196,9 @@
     expected_macs: >-
       {{ expected_macs | default([]) + [{
            'host': item.hostname,
-           'macs': item.interfaces | default([]) | map(attribute='macAddress') | list
+           'macs': item.interfaces | default([], true) | map(attribute='macAddress') | list
          }] }}
-  loop: "{{ ac.hosts | default([]) }}"
+  loop: "{{ ac.hosts | default([], true) }}"
   loop_control:
     label: "{{ item.hostname }}"
   when: ac is defined

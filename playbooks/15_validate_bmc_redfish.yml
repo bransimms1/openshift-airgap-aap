@@ -25,7 +25,7 @@
         data:
           check_bmc:
             status: "{{ 'SKIPPED' if (demo_bmc_mode | default('simulated')) == 'skipped' else 'SIMULATED' }}"
-            hosts: "{{ (expected_macs | default([])) | map(attribute='host') | list }}"
+            hosts: "{{ (expected_macs | default([], true)) | map(attribute='host') | list }}"
             detail: >-
               Demo mode, no Redfish endpoint. In production this reads system
               and firmware inventory over Redfish, compares installed BIOS

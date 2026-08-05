@@ -25,7 +25,7 @@
             data:
               check_registry:
                 status: SIMULATED
-                hosts: "{{ mirror_hosts | default([]) }}"
+                hosts: "{{ mirror_hosts | default([], true) }}"
                 detail: >-
                   Demo mode. In production this fetches /v2/ over TLS validated
                   by the bundle's own additionalTrustBundle, reads the
@@ -36,13 +36,25 @@
         - name: End the play
           ansible.builtin.meta: end_play
 
-    - name: At least one mirror host must be declared
+    # A string here would be iterated character by character by the loop below,
+    # and a mapping key by key. Assert the shape before anything consumes it.
+    - name: Mirror hosts must be a non-empty list of scalars
       ansible.builtin.assert:
-        that: (mirror_hosts | default([])) | length > 0
+        that:
+          - mirror_hosts is defined
+          - mirror_hosts is not none
+          - mirror_hosts is sequence
+          - mirror_hosts is not string
+          - mirror_hosts is not mapping
+          - (mirror_hosts | length) > 0
+          - mirror_hosts | reject('string') | reject('number') | list | length == 0
         fail_msg: >-
-          mirror_hosts is empty. It is derived from the bundle's
-          imageContentSources, so an empty list means the bundle declares no
-          mirror for the cluster to pull from.
+          mirror_hosts must be a non-empty list of host strings, for example:
+            mirror_hosts:
+              - registry.example.com:8443
+          It is derived from the bundle's imageContentSources, so an empty or
+          malformed value means the bundle declares no usable mirror.
+          Got: {{ mirror_hosts | default('undefined') }}
 
     # Parsing and validation live in tasks/mirror_host_parse.yml so the tests
     # exercise the same expressions. EVERY entry is validated, not just the
@@ -50,7 +62,7 @@
     # host would otherwise reach the network as a nonsense URL. This runs before
     # any network module, and names the value and the accepted forms.
     - name: Validate every mirror host
-      ansible.builtin.include_tasks: tasks/mirror_host_parse.yml
+      ansible.builtin.include_tasks: tasks/mirror_host_validate.yml
       loop: "{{ mirror_hosts }}"
       loop_control:
         loop_var: _mh
@@ -59,7 +71,7 @@
     # The certificate is read from the first host, so its parse is the one that
     # must survive the loop above.
     - name: Parse the mirror host the certificate is read from
-      ansible.builtin.include_tasks: tasks/mirror_host_parse.yml
+      ansible.builtin.include_tasks: tasks/mirror_host_validate.yml
       vars:
         _mh: "{{ mirror_hosts[0] }}"
 

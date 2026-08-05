@@ -15,7 +15,7 @@
             data:
               check_vips:
                 status: SIMULATED
-                probed: "{{ (api_vips | default([])) + (ingress_vips | default([])) }}"
+                probed: "{{ (api_vips | default([], true)) + (ingress_vips | default([], true)) }}"
                 detail: >-
                   Demo mode. In production each VIP is probed from the install
                   subnet and the check asserts silence - an address that already

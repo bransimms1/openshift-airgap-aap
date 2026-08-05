@@ -21,6 +21,25 @@
       - {host: "[2001:db8::1]:8443", hostname: "2001:db8::1", port: "8443", error: ""}
       - {host: "2001:db8::1", hostname: "2001:db8::1", port: "8443", error: ""}
       - {host: "registry.example.com:65535", hostname: "registry.example.com", port: "65535", error: ""}
+      # --- IPv6 syntax, validated with ansible.utils.ipaddr ------------------
+      - {host: "::1", hostname: "::1", port: "8443", error: ""}
+      - {host: "[::1]", hostname: "::1", port: "8443", error: ""}
+      - {host: "[::1]:8443", hostname: "::1", port: "8443", error: ""}
+      - {host: "2001:db8:0:0:0:0:0:1", hostname: "2001:db8:0:0:0:0:0:1", port: "8443", error: ""}
+      - {host: "a:b:c", error_contains: "not a valid IPv6"}
+      - {host: "2001:::1", error_contains: "not a valid IPv6"}
+      - {host: "12345::1", error_contains: "not a valid IPv6"}
+      - {host: "gggg::1", error_contains: "not a valid IPv6"}
+      - {host: "1:2:3:4:5:6:7", error_contains: "not a valid IPv6"}
+      - {host: "1:2:3:4:5:6:7:8:9", error_contains: "not a valid IPv6"}
+      # --- trailing text after a bracketed address ---------------------------
+      - {host: "[::1]garbage", error_contains: "trailing text"}
+      - {host: "[::1]8443", error_contains: "trailing text"}
+      - {host: "[::1]:8443extra", error_contains: "port is not a number"}
+      - {host: "[::1]/path", error_contains: "path"}
+      - {host: "[::1]?query", error_contains: "path, query or fragment"}
+      - {host: "[::1]#fragment", error_contains: "path, query or fragment"}
+      - {host: "[2001:db8::1]notaport", error_contains: "trailing text"}
       # --- rejected ---------------------------------------------------------
       - {host: "registry.example.com:", error_contains: "port is empty"}
       - {host: "registry.example.com:notaport", error_contains: "not a number"}
@@ -31,11 +50,85 @@
       - {host: "", error_contains: "empty"}
       - {host: "registry.example.com:0", error_contains: "out of range"}
       - {host: "registry.example.com:70000", error_contains: "out of range"}
-      - {host: "registry.example.com:8443:extra", error_contains: "not a valid host"}
+      - {host: "registry.example.com:8443:extra", error_contains: "not a valid IPv6"}
     cases:
+      # --- null-safety and host identity ------------------------------------
+      - name: "null registry results cannot pass"
+        reg: {results: null}
+        hosts: []
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: a 200 result with no item cannot pass
+        reg: {results: [{status: 200}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: a blank item cannot pass
+        reg: {results: [{status: 200, item: "   "}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: a null item cannot pass
+        reg: {results: [{status: 200, item: null}]}
+        hosts: ["registry.example.com:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: duplicate results for one host cannot pass
+        reg: {results: [{status: 200, item: "r:8443"}, {status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: a configured host missing from the results cannot pass
+        reg: {results: [{status: 200, item: "a:8443"}]}
+        hosts: ["a:8443", "b:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: an unknown host in the results cannot pass
+        reg: {results: [{status: 200, item: "a:8443"}, {status: 200, item: "rogue:8443"}]}
+        hosts: ["a:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: FAIL
+
+      - name: exact matching results for every configured host passes
+        reg: {results: [{status: 200, item: "a:8443"}, {status: 401, item: "b:8443"}]}
+        hosts: ["a:8443", "b:8443"]
+        cert: {not_after: "20270101000000Z"}
+        payload: {status: 200}
+        cert_ok: true
+        payload_state: CONFIRMED
+        status: PASS
+
       # --- input hardening --------------------------------------------------
       - name: empty registry results cannot pass - nothing was probed
         reg: {results: []}
+        hosts: []
         cert: {not_after: "20270101000000Z"}
         payload: {status: 200}
         cert_ok: true
@@ -44,6 +137,7 @@
 
       - name: missing registry results cannot pass
         reg: {}
+        hosts: []
         cert: {not_after: "20270101000000Z"}
         payload: {status: 200}
         cert_ok: true
@@ -52,6 +146,7 @@
 
       - name: string status "200" is normalised to CONFIRMED
         reg: {results: [{status: "200", item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: "200"}
         cert_ok: true
@@ -60,6 +155,7 @@
 
       - name: string status "401" is normalised to UNCONFIRMED
         reg: {results: [{status: "401", item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: "401"}
         cert_ok: true
@@ -68,6 +164,7 @@
 
       - name: redirect 301 is MISSING
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 301}
         cert_ok: true
@@ -76,6 +173,7 @@
 
       - name: redirect 302 is MISSING
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 302}
         cert_ok: true
@@ -84,6 +182,7 @@
 
       - name: redirect 307 is MISSING
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 307}
         cert_ok: true
@@ -92,6 +191,7 @@
 
       - name: 403 is MISSING - forbidden is not authentication required
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 403}
         cert_ok: true
@@ -100,6 +200,7 @@
 
       - name: missing payload status is MISSING
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {}
         cert_ok: true
@@ -108,6 +209,7 @@
 
       - name: malformed payload status string is MISSING
         reg: {results: [{status: "notaport", item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: "two hundred"}
         cert_ok: true
@@ -117,6 +219,7 @@
 
       - name: null payload status is MISSING
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: null}
         cert_ok: true
@@ -125,6 +228,7 @@
 
       - name: null not_after is not a usable certificate
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: null}
         payload: {status: 200}
         cert_ok: false
@@ -133,6 +237,7 @@
 
       - name: whitespace-only not_after is not a usable certificate
         reg: {results: [{status: 200, item: "r:8443"}]}
+        hosts: ["r:8443"]
         cert: {not_after: "   "}
         payload: {status: 200}
         cert_ok: false
@@ -141,6 +246,7 @@
 
       - name: everything verified
         reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 200}
         cert_ok: true
@@ -149,6 +255,7 @@
 
       - name: authenticated mirror - payload unconfirmed, not PASS
         reg: {results: [{status: 401, item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 401}
         cert_ok: true
@@ -157,6 +264,7 @@
 
       - name: release repository missing (404)
         reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 404}
         cert_ok: true
@@ -165,6 +273,7 @@
 
       - name: payload probe did not run at all
         reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {failed: true}
         cert_ok: true
@@ -173,6 +282,7 @@
 
       - name: certificate could not be read
         reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {failed: true, msg: "handshake failure"}
         payload: {status: 200}
         cert_ok: false
@@ -181,6 +291,7 @@
 
       - name: certificate present but empty not_after
         reg: {results: [{status: 200, item: "registry.example.com:8443"}]}
+        hosts: ["registry.example.com:8443"]
         cert: {not_after: ""}
         payload: {status: 200}
         cert_ok: false
@@ -189,6 +300,7 @@
 
       - name: a host did not answer on /v2/
         reg: {results: [{status: 200, item: "a.example.com:8443"}, {status: -1, item: "b.example.com:8443"}]}
+        hosts: ["a.example.com:8443", "b.example.com:8443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 200}
         cert_ok: true
@@ -198,6 +310,7 @@
 
       - name: unreachable host outranks an unconfirmed payload
         reg: {results: [{status: 503, item: "a.example.com:443"}]}
+        hosts: ["a.example.com:443"]
         cert: {not_after: "20270101000000Z"}
         payload: {status: 401}
         cert_ok: true
@@ -212,6 +325,7 @@
         _reg: "{{ case.reg }}"
         _cert: "{{ case.cert }}"
         _payload: "{{ case.payload }}"
+        mirror_hosts: "{{ case.hosts | default([]) }}"
       loop: "{{ cases }}"
       loop_control:
         loop_var: case
@@ -221,8 +335,6 @@
       ansible.builtin.include_tasks: mirror_host_case.yml
       vars:
         _mh: "{{ addr.host }}"
-        # The tests assert on the error string rather than aborting the run.
-        mirror_host_fail_on_error: false
       loop: "{{ addresses }}"
       loop_control:
         loop_var: addr

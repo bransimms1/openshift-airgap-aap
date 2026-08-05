@@ -1,0 +1,24 @@
+---
+# Parse a mirror host and REJECT it if it is malformed.
+#
+# The production entry point. tasks/mirror_host_parse.yml computes
+# _mirror_host_error and never fails; this file turns a non-empty error into a
+# hard failure with no way to switch it off. There is deliberately no
+# "continue anyway" variable: one would be settable as a launch-time extra var
+# and would let a malformed host reach the network.
+#
+# The fixture tests include mirror_host_parse.yml directly and inspect
+# _mirror_host_error, so they exercise the same expressions without needing a
+# bypass to exist.
+
+- name: Parse the mirror host
+  ansible.builtin.include_tasks: mirror_host_parse.yml
+
+- name: Reject a malformed mirror host
+  ansible.builtin.fail:
+    msg: >-
+      mirror host {{ _mh_raw | default('(empty)') }} is not usable:
+      {{ _mirror_host_error }}.
+      Accepted forms: host, host:port, ipv4, ipv4:port, ipv6,
+      [ipv6] or [ipv6]:port. No scheme, path, query or fragment.
+  when: _mirror_host_error | length > 0

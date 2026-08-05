@@ -88,7 +88,7 @@ in this bundle - the export had unresolved warnings.</div>
 {% endfor %}
 </table>
 <p class="meta">Resolved via {{ report.checks.dns.mode | default('unknown') }}
-{% if report.checks.dns.resolvers | default([]) %} &middot; resolvers
+{% if report.checks.dns.resolvers | default([], true) %} &middot; resolvers
 <code>{{ report.checks.dns.resolvers | join(', ') }}</code>{% endif %}.</p>
 {% else %}
 <p>{{ report.checks.dns.status | default('SKIPPED') }} &mdash;
@@ -100,19 +100,19 @@ in this bundle - the export had unresolved warnings.</div>
 <tr><th>Check</th><th>Status</th><th>Detail</th></tr>
 <tr><td>NTP sources</td>
     <td class="{{ report.checks.ntp.status | default('SKIPPED') | lower }}">{{ report.checks.ntp.status | default('SKIPPED') }}</td>
-    <td><code>{{ report.checks.ntp.sources | default([]) | join(', ') }}</code>
+    <td><code>{{ report.checks.ntp.sources | default([], true) | join(', ') }}</code>
     {% if report.checks.ntp.unreachable | default([]) %} &middot; unreachable:
-    <code>{{ report.checks.ntp.unreachable | default([]) | join(', ') }}</code>{% endif %}</td></tr>
+    <code>{{ report.checks.ntp.unreachable | default([], true) | join(', ') }}</code>{% endif %}</td></tr>
 <tr><td>Mirror registry</td>
     <td class="{{ report.checks.registry.status | default('SKIPPED') | lower }}">{{ report.checks.registry.status | default('SKIPPED') }}</td>
-    <td><code>{{ report.checks.registry.hosts | default([]) | join(', ') }}</code>
+    <td><code>{{ report.checks.registry.hosts | default([], true) | join(', ') }}</code>
     &middot; certificate expires {{ report.checks.registry.cert_expires | default('n/a') }}
     &middot; release payload {{ report.checks.registry.release_payload_state | default('n/a') }}</td></tr>
 <tr><td>VIPs probed (must be free)</td>
     <td class="{{ report.checks.vips.status | default('SKIPPED') | lower }}">{{ report.checks.vips.status | default('SKIPPED') }}</td>
-    <td><code>{{ report.checks.vips.probed | default([]) | join(', ') }}</code>
+    <td><code>{{ report.checks.vips.probed | default([], true) | join(', ') }}</code>
     {% if report.checks.vips.answering | default([]) %} &middot; already answering:
-    <code>{{ report.checks.vips.answering | default([]) | join(', ') }}</code>{% endif %}</td></tr>
+    <code>{{ report.checks.vips.answering | default([], true) | join(', ') }}</code>{% endif %}</td></tr>
 <tr><td>Bastion free space</td>
     <td class="{{ report.checks.bastion.status | default('SKIPPED') | lower }}">{{ report.checks.bastion.status | default('SKIPPED') }}</td>
     <td>{{ report.checks.bastion.free_gb | default('n/a') }} GB free

@@ -15,7 +15,7 @@
             data:
               check_ntp:
                 status: SIMULATED
-                sources: "{{ ntp_sources | default([]) }}"
+                sources: "{{ ntp_sources | default([], true) }}"
                 detail: >-
                   Demo mode. In production this queries each declared source
                   directly from the install subnet with chronyd -Q and asserts

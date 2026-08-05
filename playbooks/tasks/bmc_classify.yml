@@ -8,7 +8,7 @@
 # Inputs, set by the caller:
 #   _sys                registered result of GetSystemInventory
 #   _fw                 registered result of GetFirmwareInventory
-#   firmware_baseline   optional; may be undefined
+#   firmware_baseline   optional; may be undefined, null, or malformed
 #
 # Outputs:
 #   _bmc_system         the selected system record, or {}
@@ -17,15 +17,22 @@
 #   _bmc_bios_installed installed BIOS version, or 'unknown'
 #   _bmc_bios_expected  baseline version, or 'unset'
 #   _bmc_firmware_state MATCH | DRIFT | UNKNOWN_INSTALLED | BASELINE_UNSET
-
-# The reads run with failed_when: false so an unreachable BMC still reaches
-# set_stats. _sys.failed is therefore not a usable signal - a suppressed
-# failure and a success look identical through it. Judge the returned data.
 #
-# Entries are (uri, record) pairs. Anything that is not a non-empty sequence of
-# that shape is discarded here rather than crashing a filter further down: a
-# malformed entry is a reason to report the BMC unusable, not to lose the run.
-- name: Collect every system record the BMC returned
+# TYPE RULES, applied to every value that comes off the wire:
+#
+#   identifier   a non-blank string, or a number. Numeric zero IS accepted: a
+#                Redfish Id of 0 names a system as well as any other, and
+#                rejecting it would fail a working BMC. Booleans, lists,
+#                mappings, null and blank strings are rejected - `false | string`
+#                is "False", which is non-blank, so a string cast alone would
+#                have accepted it.
+#   PowerState   a string in the Redfish enumeration. Nothing else.
+#   version      a non-blank string, or a number, normalised to a string.
+#
+# `is number` is true for booleans in Jinja, because bool subclasses int, so
+# every numeric test below rejects booleans first.
+
+- name: Establish the classification defaults
   ansible.builtin.set_fact:
     # Identifiers GetSystemInventory can return. Override bmc_identifier_keys
     # if a vendor exposes something else stable.
@@ -33,32 +40,59 @@
     # Redfish PowerState enumeration. Override bmc_power_states for a vendor
     # that reports something outside it.
     _bmc_default_power_states: ['On', 'Off', 'PoweringOn', 'PoweringOff', 'Paused']
-    _bmc_candidates: >-
-      {{ (_sys.redfish_facts.system.entries | default([]))
-         | select('sequence') | reject('string') | reject('mapping')
-         | select('truthy') | map('last') | select('mapping') | list }}
+    _bmc_candidates: []
     _bmc_usable: []
 
+# entries is documented as a list of (uri, record) pairs. Anything else is
+# discarded here rather than crashing a filter downstream. `default([], true)`
+# rather than `default([])`: an explicit null is defined, so the plain form
+# would not replace it.
+- name: Reduce the Redfish entries to well-formed pairs
+  ansible.builtin.set_fact:
+    _bmc_candidates: "{{ _bmc_candidates + [item | last] }}"
+  loop: "{{ _bmc_entries_raw }}"
+  loop_control:
+    label: "{{ (item | last).Id | default('entry') if item is sequence and item is not string else 'malformed' }}"
+  vars:
+    _bmc_entries_in: "{{ _sys.redfish_facts.system.entries | default([], true) }}"
+    # A string or mapping here would otherwise be iterated character- or
+    # key-wise by the loop.
+    _bmc_entries_raw: >-
+      {{ _bmc_entries_in
+         if (_bmc_entries_in is sequence and _bmc_entries_in is not string
+             and _bmc_entries_in is not mapping)
+         else [] }}
+  when:
+    - item is sequence
+    - item is not string
+    - item is not mapping
+    # Exactly two elements: a one-element list holding a valid-looking record
+    # is still not the documented shape.
+    - (item | length) == 2
+    - (item | last) is mapping
+
 # A record is usable only if the downstream workflow could act on it, and that
-# means VALUES, not just keys. `Id` present but null, or PowerState present but
-# an empty string, describes nothing the workflow can name or reason about.
-# A Redfish error body is also a non-empty mapping and would otherwise read as
-# a healthy system, so it is rejected explicitly.
+# means VALUES of the right TYPE, not merely keys that exist. A Redfish error
+# body is also a non-empty mapping and would otherwise read as a healthy
+# system, so it is rejected explicitly.
 - name: Keep only the records the workflow could act on
   ansible.builtin.set_fact:
     _bmc_usable: "{{ _bmc_usable + [item] }}"
   loop: "{{ _bmc_candidates }}"
   loop_control:
     label: "{{ item.Id | default(item.SerialNumber) | default('unidentified') }}"
+  vars:
+    _ids: >-
+      {{ (bmc_identifier_keys | default(_bmc_default_identifier_keys))
+         | select('in', item) | map('extract', item) | list }}
+    _id_strings: "{{ _ids | select('string') | map('trim') | select('truthy') | list }}"
+    _id_numbers: "{{ _ids | reject('boolean') | select('number') | list }}"
   when:
     - item.error is not defined
-    # At least one identifier key whose value survives null/blank normalisation.
-    - (bmc_identifier_keys | default(_bmc_default_identifier_keys)
-       | select('in', item) | map('extract', item) | reject('none')
-       | map('string') | map('trim') | select('truthy') | list | length) > 0
+    - (_id_strings | length) + (_id_numbers | length) > 0
     - item.PowerState is defined
-    - item.PowerState is not none
-    - (item.PowerState | string | trim) in (bmc_power_states | default(_bmc_default_power_states))
+    - item.PowerState is string
+    - (item.PowerState | trim) in (bmc_power_states | default(_bmc_default_power_states))
 
 # First usable record wins, and the order the BMC returned them is preserved,
 # so selection is deterministic across runs against the same hardware.
@@ -71,30 +105,30 @@
 # Says what was wrong, not merely that something was.
 - name: Record why no usable record was found
   ansible.builtin.set_fact:
-    _bmc_unusable_why: >-
-      {{ 'ok' if _bmc_reachable | bool else _bmc_why_none }}
+    _bmc_unusable_why: "{{ 'ok' if _bmc_reachable | bool else _bmc_why_none }}"
   vars:
     _bmc_error_count: "{{ _bmc_rejected | selectattr('error', 'defined') | list | length }}"
     _bmc_why_none: >-
       {{ 'no usable system inventory returned' if _bmc_candidates | length == 0
-         else 'of ' ~ _bmc_candidates | length ~ ' record(s): '
-              ~ _bmc_error_count ~ ' Redfish error(s); the rest lacked a non-blank '
-              ~ 'identifier (Id/UUID/SerialNumber/ServiceTag/SKU) or a recognised '
-              ~ 'PowerState ('
+         else 'of ' ~ _bmc_candidates | length ~ ' well-formed record(s): '
+              ~ _bmc_error_count ~ ' Redfish error(s); the rest lacked a usable '
+              ~ 'identifier (Id/UUID/SerialNumber/ServiceTag/SKU must be a '
+              ~ 'non-blank string or a number) or a recognised PowerState ('
               ~ (bmc_power_states | default(_bmc_default_power_states) | join('/'))
               ~ ')' }}
 
 # --- firmware ---------------------------------------------------------------
-#
-# Baseline and versions are normalised to trimmed strings before anything is
-# compared, so an integer version, a null, or a baseline of "" or "   " cannot
-# masquerade as a real value.
+
 - name: Normalise the firmware baseline
   ansible.builtin.set_fact:
     _bmc_bios_expected: >-
-      {{ ((firmware_baseline | default({})).bios_version | default('', true) | string | trim)
-         | default('unset', true) }}
+      {{ (_b | trim) if (_b is string and (_b | trim | length) > 0)
+         else ((_b | string) if (_b is not boolean and _b is number) else 'unset') }}
     _bmc_bios_entries: []
+  vars:
+    _fb: "{{ firmware_baseline | default({}, true) }}"
+    # A baseline that is not a mapping has no bios_version to read.
+    _b: "{{ (_fb.bios_version | default('')) if _fb is mapping else '' }}"
 
 - name: Normalise the BIOS firmware records
   ansible.builtin.set_fact:
@@ -102,15 +136,23 @@
       {{ _bmc_bios_entries
          + [{'id': (item.Id | default('', true) | string | trim | lower),
              'version': (item.Version | string | trim)}] }}
-  loop: >-
-    {{ (_fw.redfish_facts.firmware.entries | default([])) | select('mapping')
-       | selectattr('Name', 'defined') | selectattr('Name', 'search', 'BIOS')
-       | selectattr('Version', 'defined') | rejectattr('Version', 'none') | list }}
+  loop: "{{ _bmc_fw_entries }}"
   loop_control:
     label: "{{ item.Id | default(item.Name) | default('bios') }}"
-  # A version that trims to nothing carries no information and is dropped, so
-  # the state becomes UNKNOWN_INSTALLED rather than an empty-string comparison.
-  when: (item.Version | string | trim) | length > 0
+  vars:
+    _fw_in: "{{ _fw.redfish_facts.firmware.entries | default([], true) }}"
+    _bmc_fw_entries: >-
+      {{ (_fw_in if (_fw_in is sequence and _fw_in is not string
+                     and _fw_in is not mapping) else [])
+         | select('mapping')
+         | selectattr('Name', 'defined') | selectattr('Name', 'search', 'BIOS')
+         | selectattr('Version', 'defined') | list }}
+  # A version must be a non-blank string or a number. Booleans, lists and
+  # mappings would stringify to "True", "[]" and "{}" and then compare.
+  when:
+    - item.Version is not boolean
+    - (item.Version is string and (item.Version | trim | length) > 0)
+      or (item.Version is number)
 
 # Dell reports the running and the rollback image under the same Name, "BIOS",
 # distinguished only by Id (Installed-159-2.15.1 vs Previous-159-2.14.0). Ids

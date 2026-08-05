@@ -1,8 +1,12 @@
 ---
 # Parse and validate one mirror-registry host entry.
 #
-# In its own file so demo/tests/registry_verdict.yml exercises the same
-# expressions the playbook uses.
+# PARSING AND VALIDATION ONLY. This file never fails the play: the caller
+# decides what to do with _mirror_host_error. playbooks/12_validate_registry.yml
+# fails unconditionally on a non-empty error, and the fixture tests inspect the
+# string. That split is deliberate - an earlier version took a
+# mirror_host_fail_on_error flag, which was an externally overridable variable
+# and therefore a launch-time bypass of production validation.
 #
 # Input:
 #   _mh   one entry from mirror_hosts
@@ -20,29 +24,34 @@
 # A bare IPv6 literal carries no port: splitting it on ':' would take its last
 # hextet as one, so bracketing is required to give an IPv6 address a port.
 #
+# Address syntax is checked with ansible.utils.ipaddr, which the automation
+# already depends on, rather than by counting characters: 'a:b:c' is all legal
+# hex and colons and is not an address.
+#
 # Parsing uses string methods rather than regex substitution. Jinja applies
 # Python escape processing to string literals, so a replacement written as '\1'
 # becomes a control character and the substitution silently yields nothing.
 
 - name: Parse the mirror host entry
   ansible.builtin.set_fact:
-    _mh_bracketed: "{{ (_mh | string | trim).startswith('[') }}"
     _mh_raw: "{{ _mh | string | trim }}"
 
 - name: Split the mirror host into address and port
   ansible.builtin.set_fact:
+    _mh_bracketed: "{{ _mh_raw.startswith('[') }}"
+    # Everything after the closing bracket, so trailing junk can be rejected
+    # rather than silently ignored by the slice.
+    _mh_after_bracket: "{{ _mh_raw.split(']', 1)[1] if ']' in _mh_raw else '' }}"
     _registry_hostname: >-
-      {{ _mh_raw[1:_mh_raw.index(']')] if _mh_bracketed | bool and ']' in _mh_raw
+      {{ _mh_raw[1:_mh_raw.index(']')] if _mh_raw.startswith('[') and ']' in _mh_raw
          else (_mh_raw.split(':')[0] if _mh_raw.count(':') == 1 else _mh_raw) }}
     _registry_port: >-
       {{ _mh_raw.rsplit(':', 1)[1]
-         if (_mh_bracketed | bool and ']:' in _mh_raw)
-            or (not _mh_bracketed | bool and _mh_raw.count(':') == 1)
+         if (_mh_raw.startswith('[') and ']:' in _mh_raw)
+            or (not _mh_raw.startswith('[') and _mh_raw.count(':') == 1)
          else (registry_port | default(registry_port_default)) }}
 
-# Rejected early, with the value and the accepted forms named, rather than
-# letting a malformed entry surface as a confusing connection error later.
-# Written as a first-match list rather than nested ternaries: the checks stay
+# A first-match list rather than nested ternaries: the checks stay
 # independently readable and the brackets stay countable.
 - name: Validate the mirror host entry
   ansible.builtin.set_fact:
@@ -52,21 +61,46 @@
     _mh_brackets_ok: >-
       {{ _mh_raw.count('[') == _mh_raw.count(']')
          and ('[' not in _mh_raw or _mh_raw.startswith('['))
-         and (not _mh_bracketed | bool or ']' in _mh_raw) }}
+         and (not _mh_raw.startswith('[') or ']' in _mh_raw) }}
+    # After the closing bracket only '' or ':port' is legal. '[::1]garbage',
+    # '[::1]8443' and '[::1]/path' all land here.
+    _mh_bracket_tail_ok: >-
+      {{ (not _mh_raw.startswith('['))
+         or _mh_after_bracket == ''
+         or _mh_after_bracket.startswith(':') }}
+    # Guarded: the filters raise on an undefined or empty value, and an empty
+    # address is already reported by its own check above.
+    _mh_addr: "{{ _registry_hostname | default('') }}"
+    _mh_is_ipv6: "{{ ((_mh_addr | ansible.utils.ipv6) is truthy) if _mh_addr | length > 0 else false }}"
+    _mh_is_ipv4: "{{ ((_mh_addr | ansible.utils.ipv4) is truthy) if _mh_addr | length > 0 else false }}"
+    # A DNS name: labels of letters, digits and hyphens, separated by dots.
+    _mh_is_hostname: >-
+      {{ _mh_addr is match('^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
+                                     '(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$') }}
     _mh_checks:
       - "{{ 'entry is empty' if _mh_raw | length == 0 else '' }}"
       - "{{ 'a URL scheme is not accepted - give host or host:port only' if _mh_has_scheme else '' }}"
       - "{{ 'a path, query or fragment is not accepted' if ('/' in _mh_raw or '?' in _mh_raw or '#' in _mh_raw) else '' }}"
       - "{{ 'unbalanced brackets' if not _mh_brackets_ok | bool else '' }}"
-      # More than one colon and no brackets can only be a bare IPv6 literal,
-      # which by definition carries no port - bracket it to give it one. If it
-      # is not hex-and-colons it is simply malformed.
       - >-
-        {{ 'not a valid host, IPv4, bare IPv6, or host:port - bracket an IPv6
-            address as [addr]:port to give it a port'
-           if (not _mh_bracketed | bool and _mh_raw.count(':') > 1
-               and _mh_raw is not match('^[0-9A-Fa-f:]+$')) else '' }}
+        {{ 'trailing text after the bracketed address - only [addr] or
+            [addr]:port is accepted' if not _mh_bracket_tail_ok | bool else '' }}
       - "{{ 'address is empty' if _registry_hostname | length == 0 else '' }}"
+      # A bracketed address must be IPv6; brackets exist for nothing else.
+      - >-
+        {{ 'bracketed address is not a valid IPv6 address: ' ~ _registry_hostname
+           if (_mh_raw.startswith('[') and not _mh_is_ipv6 | bool) else '' }}
+      # Unbracketed with more than one colon can only be a bare IPv6 literal.
+      - >-
+        {{ 'not a valid IPv6 address - bracket it as [addr]:port to give it a port: '
+           ~ _registry_hostname
+           if (not _mh_raw.startswith('[') and _mh_raw.count(':') > 1
+               and not _mh_is_ipv6 | bool) else '' }}
+      # Otherwise it must be a hostname or an IPv4 address.
+      - >-
+        {{ 'not a hostname, IPv4 or IPv6 address: ' ~ _registry_hostname
+           if (not _mh_raw.startswith('[') and _mh_raw.count(':') <= 1
+               and not (_mh_is_ipv4 | bool or _mh_is_hostname | bool)) else '' }}
       - "{{ 'port is empty' if _mh_raw.endswith(':') else '' }}"
       - >-
         {{ 'port is not a number: ' ~ _registry_port
@@ -75,14 +109,3 @@
         {{ 'port out of range 1-65535: ' ~ _registry_port
            if ((_registry_port | string).isdigit()
                and ((_registry_port | int) < 1 or (_registry_port | int) > 65535)) else '' }}
-
-- name: Reject a malformed mirror host
-  ansible.builtin.fail:
-    msg: >-
-      mirror host {{ _mh_raw | default('(empty)') }} is not usable:
-      {{ _mirror_host_error }}.
-      Accepted forms: host, host:port, ipv4, ipv4:port, ipv6,
-      [ipv6] or [ipv6]:port. No scheme, path, query or fragment.
-  when:
-    - _mirror_host_error | length > 0
-    - mirror_host_fail_on_error | default(true) | bool
