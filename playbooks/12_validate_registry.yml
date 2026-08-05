@@ -58,16 +58,24 @@
       register: _reg
       failed_when: false
 
-    # mirror_hosts entries may or may not carry an explicit port. Parse it, and
-    # fall back only when the host does not specify one, so the certificate is
-    # read from the same endpoint the /v2/ probe used.
+    # mirror_hosts entries may or may not carry an explicit port, and the host
+    # may be a hostname, an IPv4 address, or a bracketed or bare IPv6 literal.
+    # Splitting on ':' would take the last hextet of a bare IPv6 address as a
+    # port, so the address and port are matched explicitly. The fallback is used
+    # only when the entry carries no port, so the certificate is read from the
+    # endpoint the /v2/ probe actually used.
     - name: Determine the host and port to read the certificate from
       ansible.builtin.set_fact:
-        _registry_hostname: "{{ mirror_hosts[0] | split(':') | first }}"
+        _registry_hostname: >-
+          {{ _mh[1:_mh.index(']')] if _mh.startswith('[')
+             else (_mh.split(':')[0] if _mh.count(':') == 1 else _mh) }}
         _registry_port: >-
-          {{ (mirror_hosts[0] | split(':') | last)
-             if (mirror_hosts[0] | split(':') | length) > 1
+          {{ _mh.rsplit(':', 1)[1]
+             if (_mh.startswith('[') and ']:' in _mh)
+                or (not _mh.startswith('[') and _mh.count(':') == 1)
              else (registry_port | default(registry_port_default)) }}
+      vars:
+        _mh: "{{ mirror_hosts[0] }}"
 
     - name: Read the certificate the registry actually presents
       community.crypto.get_certificate:
