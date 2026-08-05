@@ -56,6 +56,26 @@ REPORT_CAPABILITY = "20-readiness-report"
 APPROVAL_IDENTIFIER = "approve-execute"
 EXECUTION_TEMPLATES = ["30-bmc-prepare-hosts", "31-generate-agent-iso", "32-boot-virtual-media"]
 
+# Edge types Automation Controller accepts on a workflow node parent.
+SUPPORTED_EDGE_TYPES = ("success", "failure", "always")
+
+# EDGE TYPES ARE THE SAFETY PROPERTY, not decoration.
+#
+#   branch --always--> report    the report runs on the failure path too, so a
+#                                failed run still produces its evidence
+#   report --success--> approval the report fails deliberately on NOT_READY, so
+#                                the success edge is not taken and the gate is
+#                                unreachable
+#   approval --success--> 30 --success--> 31 --success--> 32
+#
+# Validating parent IDENTIFIERS alone let all three be changed while the graph
+# still looked correct. Every parent in controller/workflow_templates.yml
+# declares an explicit type today, so a missing type is treated as an error
+# rather than defaulted to anything.
+BRANCH_TO_REPORT_EDGE = "always"
+REPORT_TO_APPROVAL_EDGE = "success"
+EXECUTION_EDGE = "success"
+
 REQUIRED_CAPABILITIES = [
     "00-bundle-intake",
     "01-validate-bundle",
@@ -108,6 +128,59 @@ def module_args(task: dict, suffix: str) -> dict | None:
     return None
 
 
+def parse_parents(args: dict, owner: str) -> list[dict]:
+    """Parent relationships, each keeping its identifier AND its edge type.
+
+    Reducing these to identifier strings discarded the edge types, which are the
+    only thing distinguishing a workflow that gates execution from one that does
+    not.
+    """
+    raw = args.get("parents") or []
+    if not isinstance(raw, list):
+        raise SystemExit(f"::error::node {owner!r} has a non-list parents value")
+    parents: list[dict] = []
+    seen: dict[str, str] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise SystemExit(f"::error::node {owner!r} has a parent that is not a mapping: {entry!r}")
+        identifier = entry.get("identifier")
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise SystemExit(f"::error::node {owner!r} has a parent with no identifier: {entry!r}")
+        edge = entry.get("type")
+        if edge is None:
+            raise SystemExit(
+                f"::error::node {owner!r} parent {identifier!r} has no edge type; "
+                f"declare one of {'/'.join(SUPPORTED_EDGE_TYPES)} explicitly"
+            )
+        if edge not in SUPPORTED_EDGE_TYPES:
+            raise SystemExit(
+                f"::error::node {owner!r} parent {identifier!r} has unsupported edge "
+                f"type {edge!r}; expected one of {'/'.join(SUPPORTED_EDGE_TYPES)}"
+            )
+        if identifier in seen and seen[identifier] != edge:
+            raise SystemExit(
+                f"::error::node {owner!r} declares parent {identifier!r} twice with "
+                f"conflicting edge types {seen[identifier]!r} and {edge!r}"
+            )
+        seen[identifier] = edge
+        parents.append({"identifier": identifier, "type": edge})
+    return parents
+
+
+def parent_ids(node: dict) -> list[str]:
+    return [p["identifier"] for p in node["parents"]]
+
+
+def edge_type(nodes: dict[str, dict], child: str, parent: str) -> str | None:
+    """The edge type from `parent` into `child`, or None if there is no edge."""
+    if child not in nodes:
+        return None
+    for entry in nodes[child]["parents"]:
+        if entry["identifier"] == parent:
+            return entry["type"]
+    return None
+
+
 def workflow_nodes(path: Path) -> dict[str, dict]:
     """identifier -> {template, parents, is_approval}."""
     nodes: dict[str, dict] = {}
@@ -117,7 +190,7 @@ def workflow_nodes(path: Path) -> dict[str, dict]:
             continue
         ident = args.get("identifier")
         template = args.get("unified_job_template")
-        parents = [p.get("identifier") for p in args.get("parents") or [] if isinstance(p, dict)]
+        parents = parse_parents(args, ident if isinstance(ident, str) else "<unnamed>")
         loop = task.get("loop")
 
         if isinstance(loop, list):
@@ -194,7 +267,7 @@ def validate_graph(nodes: dict[str, dict]) -> list[str]:
     # Parents must exist. An unresolvable reference is a broken definition, not
     # merely an unreachable node.
     for ident, node in nodes.items():
-        for parent in node["parents"]:
+        for parent in parent_ids(node):
             if parent not in nodes:
                 errs.append(f"node {ident!r} names a parent {parent!r} that does not exist")
 
@@ -209,7 +282,7 @@ def validate_graph(nodes: dict[str, dict]) -> list[str]:
             errs.append(f"workflow graph has a cycle: {' -> '.join(cycle)}")
             return
         colour[ident] = 1
-        for parent in nodes[ident]["parents"]:
+        for parent in parent_ids(nodes[ident]):
             if parent in nodes:
                 visit(parent, trail + [ident])
         colour[ident] = 2
@@ -232,13 +305,13 @@ def validate_graph(nodes: dict[str, dict]) -> list[str]:
 def ancestors(nodes: dict[str, dict], ident: str) -> set[str]:
     """Every node upstream of `ident`."""
     seen: set[str] = set()
-    stack = list(nodes[ident]["parents"]) if ident in nodes else []
+    stack = parent_ids(nodes[ident]) if ident in nodes else []
     while stack:
         current = stack.pop()
         if current in seen or current not in nodes:
             continue
         seen.add(current)
-        stack.extend(nodes[current]["parents"])
+        stack.extend(parent_ids(nodes[current]))
     return seen
 
 
@@ -307,6 +380,93 @@ def validate_stages(nodes: dict[str, dict], pre: set[str]) -> list[str]:
     return errs
 
 
+def validate_edge_types(nodes: dict[str, dict]) -> list[str]:
+    """Prove the edge types the safety behaviour depends on.
+
+    Identifier-only validation could not tell these apart:
+      * a report whose branch edges are `success` never runs on the failure
+        path, so a failed run produces no evidence;
+      * an approval node reached by an `always` edge is reachable even when the
+        report fails on NOT_READY, which removes the gate entirely.
+    """
+    errs: list[str] = []
+    by_template = {n["template"]: i for i, n in nodes.items() if n["template"]}
+
+    report = by_template.get(REPORT_CAPABILITY)
+    if report is None:
+        return [f"{REPORT_CAPABILITY!r} is not in the workflow"]
+
+    # 1. Every readiness branch feeds the report through an `always` edge.
+    for template in READINESS_BRANCHES:
+        branch = by_template.get(template)
+        if branch is None:
+            errs.append(f"readiness branch {template!r} is not in the workflow")
+            continue
+        edge = edge_type(nodes, report, branch)
+        if edge is None:
+            errs.append(f"{template!r} is not a parent of {REPORT_CAPABILITY!r}")
+        elif edge != BRANCH_TO_REPORT_EDGE:
+            errs.append(
+                f"{template!r} feeds {REPORT_CAPABILITY!r} through a {edge!r} edge, "
+                f"expected {BRANCH_TO_REPORT_EDGE!r}; the report must run on the "
+                f"failure path so a failed run still produces evidence"
+            )
+
+    # 2. The report feeds approval through a `success` edge, and nothing else
+    #    reaches approval directly.
+    if APPROVAL_IDENTIFIER not in nodes:
+        errs.append(f"approval node {APPROVAL_IDENTIFIER!r} is not in the workflow")
+        return errs
+
+    edge = edge_type(nodes, APPROVAL_IDENTIFIER, report)
+    if edge is None:
+        errs.append(f"{REPORT_CAPABILITY!r} is not a direct parent of the approval node")
+    elif edge != REPORT_TO_APPROVAL_EDGE:
+        errs.append(
+            f"{REPORT_CAPABILITY!r} feeds the approval node through a {edge!r} edge, "
+            f"expected {REPORT_TO_APPROVAL_EDGE!r}; the report fails deliberately on "
+            f"NOT_READY, and only a success edge makes the gate unreachable"
+        )
+
+    for entry in nodes[APPROVAL_IDENTIFIER]["parents"]:
+        if entry["identifier"] == report:
+            continue
+        if nodes.get(entry["identifier"], {}).get("template") in READINESS_BRANCHES:
+            errs.append(
+                f"the approval node is reachable directly from readiness branch "
+                f"{entry['identifier']!r}; it must depend only on {REPORT_CAPABILITY!r}"
+            )
+
+    # 3. The execution chain runs on success edges, in order, behind approval.
+    chain = [APPROVAL_IDENTIFIER] + [by_template.get(t) for t in EXECUTION_TEMPLATES]
+    for parent, child in zip(chain, chain[1:]):
+        if child is None:
+            continue
+        edge = edge_type(nodes, child, parent)
+        if edge is None:
+            errs.append(f"{child!r} does not have {parent!r} as a parent")
+        elif edge != EXECUTION_EDGE:
+            errs.append(
+                f"{child!r} follows {parent!r} through a {edge!r} edge, "
+                f"expected {EXECUTION_EDGE!r}"
+            )
+
+    # No execution node may have an alternate parent that bypasses approval.
+    for template in EXECUTION_TEMPLATES:
+        execution = by_template.get(template)
+        if execution is None:
+            continue
+        for entry in nodes[execution]["parents"]:
+            if APPROVAL_IDENTIFIER not in ancestors(nodes, entry["identifier"]) \
+                    and entry["identifier"] != APPROVAL_IDENTIFIER:
+                errs.append(
+                    f"execution node {template!r} has parent {entry['identifier']!r}, "
+                    f"which does not pass through the approval node"
+                )
+
+    return errs
+
+
 def pre_approval(nodes: dict[str, dict]) -> set[str]:
     """Nodes that are not the approval node and are not downstream of it."""
     approvals = {i for i, n in nodes.items() if n["is_approval"]}
@@ -314,7 +474,7 @@ def pre_approval(nodes: dict[str, dict]) -> set[str]:
     while changed:
         changed = False
         for ident, node in nodes.items():
-            if ident not in downstream and any(p in downstream for p in node["parents"]):
+            if ident not in downstream and any(p in downstream for p in parent_ids(node)):
                 downstream.add(ident)
                 changed = True
     return {i for i in nodes if i not in downstream}
@@ -335,6 +495,7 @@ def check() -> list[str]:
     )
 
     errs += validate_stages(nodes, pre_approval(nodes))
+    errs += validate_edge_types(nodes)
 
     # 1. Required capabilities must all be present, whatever else changed.
     for capability in REQUIRED_CAPABILITIES:
@@ -376,7 +537,10 @@ def main() -> int:
     if errs:
         return 1
     print(f"workflow, job templates, harness and CI assertion agree on "
-          f"{len(REQUIRED_CAPABILITIES)} readiness capabilities")
+          f"{len(REQUIRED_CAPABILITIES)} readiness capabilities; "
+          f"branch->report edges are {BRANCH_TO_REPORT_EDGE}, "
+          f"report->approval is {REPORT_TO_APPROVAL_EDGE}, "
+          f"approval->execution is {EXECUTION_EDGE}")
     return 0
 
 

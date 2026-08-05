@@ -60,14 +60,21 @@ def edit(path: Path, old: str, new: str) -> None:
 results: list[tuple[str, bool, str]] = []
 
 
-def case(name: str, mutate, expect_failure: bool) -> None:
+def case(name: str, mutate, expect_failure: bool, expect_text: str | None = None) -> None:
     with tempfile.TemporaryDirectory() as td:
         root = sandbox(Path(td))
         mutate(root)
         rc, out = run_in(root)
         ok = (rc != 0) == expect_failure
         detail = "caught" if expect_failure else "clean"
-        results.append((name, ok, detail if ok else f"rc={rc} {out.strip()[:120]}"))
+        # For edge-type cases, the exit status alone is weak evidence: assert the
+        # message names the actual problem.
+        if ok and expect_text is not None and expect_text not in out:
+            ok = False
+            detail = f"exit status right, message wrong: {out.strip()[:110]}"
+        elif not ok:
+            detail = f"rc={rc} {out.strip()[:110]}"
+        results.append((name, ok, detail))
 
 
 case("unmodified repository is consistent", lambda r: None, False)
@@ -206,6 +213,73 @@ case("a duplicate workflow node identifier fails",
 case("a duplicate job-template name fails",
      lambda r: edit(r / TEMPLATES, 'name: "14-validate-bastion"',
                     'name: "13-validate-vips"'), True)
+
+
+# --- edge types -------------------------------------------------------------
+# Identifier-only validation could not distinguish a workflow that gates
+# execution from one that does not. Each of these keeps every node and every
+# parent identifier intact and changes only an edge type.
+
+REPORT_TO_APPROVAL = '          - { identifier: "readiness-report", type: success }'
+DNS_TO_REPORT = '          - { identifier: "10-validate-dns",      type: always }'
+VIPS_TO_REPORT = '          - { identifier: "13-validate-vips",     type: always }'
+PREPARE_PARENT = '        parents: [{ identifier: "approve-execute", type: success }]'
+
+case("approval edge success -> always fails",
+     lambda r: edit(r / WORKFLOW, REPORT_TO_APPROVAL,
+                    '          - { identifier: "readiness-report", type: always }'),
+     True, "expected 'success'")
+
+case("approval edge success -> failure fails",
+     lambda r: edit(r / WORKFLOW, REPORT_TO_APPROVAL,
+                    '          - { identifier: "readiness-report", type: failure }'),
+     True, "expected 'success'")
+
+case("a branch-to-report edge always -> success fails",
+     lambda r: edit(r / WORKFLOW, DNS_TO_REPORT,
+                    '          - { identifier: "10-validate-dns",      type: success }'),
+     True, "expected 'always'")
+
+case("a branch-to-report edge always -> failure fails",
+     lambda r: edit(r / WORKFLOW, DNS_TO_REPORT,
+                    '          - { identifier: "10-validate-dns",      type: failure }'),
+     True, "expected 'always'")
+
+case("a readiness branch removed from the report's parents fails",
+     lambda r: edit(r / WORKFLOW, VIPS_TO_REPORT + "\n", ""),
+     True, "is not a parent of")
+
+case("approval connected directly to a readiness branch fails",
+     lambda r: edit(r / WORKFLOW, REPORT_TO_APPROVAL,
+                    REPORT_TO_APPROVAL + "\n"
+                    '          - { identifier: "10-validate-dns", type: success }'),
+     True, "reachable directly from readiness branch")
+
+case("an execution node wired straight to the report fails",
+     lambda r: edit(r / WORKFLOW, PREPARE_PARENT,
+                    '        parents: [{ identifier: "readiness-report", type: success }]'),
+     True, "approval")
+
+case("a parent with no edge type fails",
+     lambda r: edit(r / WORKFLOW, REPORT_TO_APPROVAL,
+                    '          - { identifier: "readiness-report" }'),
+     True, "has no edge type")
+
+case("an unsupported edge type fails",
+     lambda r: edit(r / WORKFLOW, REPORT_TO_APPROVAL,
+                    '          - { identifier: "readiness-report", type: maybe }'),
+     True, "unsupported edge type")
+
+case("duplicate parents with conflicting edge types fail",
+     lambda r: edit(r / WORKFLOW, DNS_TO_REPORT,
+                    DNS_TO_REPORT + "\n"
+                    '          - { identifier: "10-validate-dns",      type: success }'),
+     True, "conflicting edge types")
+
+case("a parent that is not a mapping fails",
+     lambda r: edit(r / WORKFLOW, REPORT_TO_APPROVAL,
+                    '          - "readiness-report"'),
+     True, "not a mapping")
 
 width = max(len(n) for n, _, _ in results)
 failed = 0
