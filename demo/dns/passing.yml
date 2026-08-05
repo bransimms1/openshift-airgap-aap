@@ -1,8 +1,8 @@
 ---
 # DEMO FIXTURE — the zone as it looks when the site is actually ready.
 #
-# This stands in for a real resolver so the demo cannot be broken by public
-# DNS, a lab outage, or somebody fixing the lab between rehearsal and delivery.
+# This stands in for a real resolver, so the result does not depend on public
+# DNS or on lab infrastructure being available.
 # Keys are fully-qualified record names; values are lists of A records.
 # A name that is absent from this map resolves as NXDOMAIN.
 zone:
