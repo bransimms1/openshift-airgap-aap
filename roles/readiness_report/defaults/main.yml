@@ -1,0 +1,16 @@
+---
+# This role writes only into its own job's scratch space.
+#
+# On AAP running on OpenShift each workflow node executes in its own pod, so
+# there is no directory shared with the intake node to write into. Everything
+# the report needs arrives as workflow artifacts (set_stats); the rendered
+# files are this job's own output and are surfaced through the job log and the
+# readiness_report artifact rather than through a filesystem another node
+# is expected to read.
+report_workdir: "/tmp/readiness-report-{{ awx_job_id | default('local', true) }}"
+
+# Fail the job when the environment is NOT_READY. The approval node hangs off
+# this job's success edge, so a failing report makes the gate unreachable —
+# approval then means "a human approved the evidence", not "the validation
+# jobs finished".
+report_fail_when_not_ready: true

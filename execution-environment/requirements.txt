@@ -1,0 +1,5 @@
+dnspython>=2.6.1     # community.general.dig lookup
+cryptography>=42.0.0 # community.crypto
+netaddr>=1.2.1       # ansible.utils ipaddr / network_in_network (01_validate_bundle)
+jmespath>=1.0.1      # json_query
+kubernetes>=29.0.0   # kubernetes.core

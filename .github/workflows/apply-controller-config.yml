@@ -1,0 +1,31 @@
+---
+name: Apply controller configuration
+
+# Applying controller-as-code changes a live automation platform. Manual only.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "apply" to confirm'
+        required: true
+
+jobs:
+  apply:
+    if: github.event.inputs.confirm == 'apply'
+    # Self-hosted runner inside the isolated network segment: the controller is not reachable
+    # from GitHub-hosted runners, and it should not be.
+    runs-on: [self-hosted, automation-isolated]
+    environment: automation-controller   # add required reviewers here
+    container:
+      image: registry.example.com/automation/ee-airgap-readiness:1.0
+    env:
+      CONTROLLER_HOST: ${{ secrets.CONTROLLER_HOST }}
+      CONTROLLER_OAUTH_TOKEN: ${{ secrets.CONTROLLER_OAUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Apply
+        run: |
+          ansible-playbook controller/credential_types/bmc_redfish.yml
+          ansible-playbook controller/job_templates.yml
+          ansible-playbook controller/workflow_templates.yml
+          ansible-playbook controller/notifications.yml

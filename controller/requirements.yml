@@ -1,0 +1,19 @@
+---
+# Collections needed only to APPLY the controller-as-code in this directory.
+#
+# Install these wherever you run controller/job_templates.yml and
+# controller/workflow_templates.yml - an operator's machine, a pipeline, or a
+# job template inside Automation Controller itself. They are NOT needed by any
+# playbook under playbooks/, which is why they are kept out of
+# collections/requirements.yml: that file is installed during project sync and
+# by CI, neither of which has Automation Hub credentials.
+#
+#   ansible-galaxy collection install -r controller/requirements.yml
+#
+# ansible.controller is certified content and resolves from Automation Hub, not
+# public Galaxy. On AAP 2.5 and later it is already present in the supported
+# execution environment, so the simplest way to apply this configuration is a
+# job template that runs it from inside the platform.
+collections:
+  - name: ansible.controller     # controller-as-code
+    version: ">=4.6.0"

@@ -1,0 +1,25 @@
+---
+# Pre-demo smoke test. Runs the readiness chain in workflow order inside a
+# single ansible-playbook invocation, so set_stats facts flow between plays the
+# same way they flow between workflow nodes in Automation Controller.
+#
+# Run this before the demo. If it is green, the workflow will be green.
+#
+#   ansible-playbook -i inventories/demo/hosts.yml demo/smoke-test.yml \
+#     -e demo_scenario=passing
+#
+#   ansible-playbook -i inventories/demo/hosts.yml demo/smoke-test.yml \
+#     -e demo_scenario=failing_dns
+#
+# The failing_dns run is expected to stop at 10-validate-dns. That is the
+# demonstration, not a defect. To see the report from a failed run the way the
+# workflow produces it, add: --extra-vars smoke_continue_on_failure=true
+- import_playbook: ../playbooks/00_bundle_intake.yml
+- import_playbook: ../playbooks/01_validate_bundle.yml
+- import_playbook: ../playbooks/10_validate_dns.yml
+- import_playbook: ../playbooks/11_validate_ntp.yml
+- import_playbook: ../playbooks/12_validate_registry.yml
+- import_playbook: ../playbooks/13_validate_vips.yml
+- import_playbook: ../playbooks/14_validate_bastion.yml
+- import_playbook: ../playbooks/15_validate_bmc_redfish.yml
+- import_playbook: ../playbooks/20_readiness_report.yml

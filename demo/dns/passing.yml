@@ -1,0 +1,20 @@
+---
+# DEMO FIXTURE — the zone as it looks when the site is actually ready.
+#
+# This stands in for a real resolver so the demo cannot be broken by public
+# DNS, a lab outage, or somebody fixing the lab between rehearsal and delivery.
+# Keys are fully-qualified record names; values are lists of A records.
+# A name that is absent from this map resolves as NXDOMAIN.
+zone:
+  api.ocp-demo.lab.example.com:
+    - 10.42.10.5
+  api-int.ocp-demo.lab.example.com:
+    - 10.42.10.5
+  test.apps.ocp-demo.lab.example.com:
+    - 10.42.10.6
+  master-0.ocp-demo.lab.example.com:
+    - 10.42.10.11
+  master-1.ocp-demo.lab.example.com:
+    - 10.42.10.12
+  master-2.ocp-demo.lab.example.com:
+    - 10.42.10.13

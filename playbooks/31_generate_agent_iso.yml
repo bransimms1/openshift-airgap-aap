@@ -1,0 +1,56 @@
+---
+# Wraps the agent-based installer without altering its behaviour. The purpose
+# is to ensure it runs only with inputs that have been validated.
+- name: Generate the agent ISO
+  hosts: bastion
+  gather_facts: false
+  vars:
+    install_dir: "{{ bundle_workdir }}/install"
+  tasks:
+
+    # Hard stop. The approval node is reachable in demo mode, and approving it
+    # must never produce installation media, so this refuses before touching
+    # anything rather than relying on the node not being approved.
+    - name: DEMO - refuse to generate installation media
+      when: demo_mode | default(false) | bool
+      block:
+        - name: Say so plainly in the job output
+          ansible.builtin.debug:
+            msg: |
+              DEMO MODE - nothing generated.
+
+              This node exists to show that execution sits behind the approval
+              gate. In a real run it would render the verified configuration
+              into a working directory and call openshift-install agent create
+              image. In demo mode it stops here.
+        - name: End the play
+          ansible.builtin.meta: end_play
+
+    - name: Stage the configs (the installer consumes and deletes them)
+      ansible.builtin.copy:
+        src: "{{ bundle_workdir }}/{{ item }}"
+        dest: "{{ install_dir }}/{{ item }}"
+        remote_src: true
+        mode: "0600"
+      loop:
+        - install-config.yaml
+        - agent-config.yaml
+
+    - name: Inject the pull secret from the AAP credential, not the bundle
+      ansible.builtin.lineinfile:
+        path: "{{ install_dir }}/install-config.yaml"
+        regexp: '^pullSecret:'
+        line: "pullSecret: '{{ ocp_pull_secret }}'"
+      no_log: true
+
+    - name: Build the agent ISO
+      ansible.builtin.command:
+        cmd: "{{ bundle_workdir }}/tools/openshift-install --dir {{ install_dir }} agent create image"
+      register: _iso
+      changed_when: true
+      check_mode: "{{ demo_check_mode | default(false) }}"
+
+    - name: Publish artifact location
+      ansible.builtin.set_stats:
+        data:
+          agent_iso: "{{ install_dir }}/agent.x86_64.iso"

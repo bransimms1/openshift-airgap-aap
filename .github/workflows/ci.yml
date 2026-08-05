@@ -1,0 +1,302 @@
+---
+name: CI
+
+# Dependency policy - see COMPATIBILITY.md.
+#
+# Three ansible-core versions are exercised: the minimum supported, the version
+# matching the AAP 2.6 execution environment, and the current release. Lint and
+# scanning tools are pinned so that a tool release cannot change results on its
+# own.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Keep in step with COMPATIBILITY.md.
+  ANSIBLE_CORE_PRIMARY: "2.16.14"   # matches the AAP 2.6 execution environment
+  ANSIBLE_LINT_VERSION: "6.22.2"
+  YAMLLINT_VERSION: "1.35.1"
+  AWX_AWX_VERSION: "24.6.1"
+  GITLEAKS_VERSION: "8.28.0"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned tooling
+        run: |
+          pip install \
+            "ansible-core==${ANSIBLE_CORE_PRIMARY}" \
+            "ansible-lint==${ANSIBLE_LINT_VERSION}" \
+            "yamllint==${YAMLLINT_VERSION}"
+
+      - name: yamllint
+        run: yamllint .
+
+      - name: ansible-lint
+        run: ansible-lint
+
+      # The braces/commas relaxation is pinned to four named files. This step
+      # fails if it ever widens to cover files outside that list.
+      - name: yamllint scope check
+        run: |
+          printf '%s\n' \
+            '---' \
+            '- name: Probe' \
+            '  vars:' \
+            '    items:' \
+            '      - { name: "a",    value: "b" }' > _probe_tmp.yml
+          echo "--- probe file ---"; cat _probe_tmp.yml
+          echo "--- yamllint output ---"
+          yamllint -f parsable _probe_tmp.yml > _probe_out.txt 2>&1 || true
+          cat _probe_out.txt
+          if grep -qE '\((braces|commas)\)' _probe_out.txt; then
+            echo "ok: loose spacing outside the named files is still an error"
+            rm -f _probe_tmp.yml _probe_out.txt
+          else
+            echo "::error::the braces/commas exception now covers files outside the named list"
+            rm -f _probe_tmp.yml _probe_out.txt
+            exit 1
+          fi
+          # ...and the named files must still pass, or the exception is unused.
+          yamllint controller/job_templates.yml \
+                   controller/notifications.yml \
+                   controller/workflow_templates.yml \
+                   playbooks/50_day2_gitops_bootstrap.yml
+
+  syntax:
+    name: Syntax check (ansible-core ${{ matrix.ansible }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # minimum supported / AAP 2.6 aligned / current release. `latest` is
+        # deliberately unpinned, so a core regression is visible before it
+        # reaches a supported version.
+        ansible: ["2.15.13", "2.16.14", "latest"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ansible-core ${{ matrix.ansible }}
+        run: |
+          if [ "${{ matrix.ansible }}" = "latest" ]; then
+            pip install ansible-core
+          else
+            pip install "ansible-core==${{ matrix.ansible }}"
+          fi
+          pip install jmespath dnspython netaddr
+          ansible --version | head -1
+
+      # Public-Galaxy content only. ansible.controller lives in
+      # controller/requirements.yml and is deliberately not installed here: it is
+      # Automation Hub content that no playbook under playbooks/ or roles/ imports.
+      - name: Install collections
+        run: ansible-galaxy collection install -r execution-environment/requirements.yml
+
+      - name: Syntax-check every playbook
+        run: |
+          shopt -s nullglob
+          checked=0
+          for pb in playbooks/*.yml; do
+            echo "== $pb"
+            ansible-playbook --syntax-check -i inventories/site-a/hosts.yml "$pb"
+            checked=$((checked + 1))
+          done
+          echo "syntax-checked $checked playbook(s)"
+          # Guard against a glob that matches nothing.
+          if [ "$checked" -lt 14 ]; then
+            echo "::error::expected at least 14 playbooks, checked $checked"
+            exit 1
+          fi
+
+      # Controller syntax smoke test.
+      #
+      # controller/*.yml import ansible.controller, Automation Hub content that
+      # a public runner cannot install. awx.awx carries the same module names,
+      # so substituting the namespace into throwaway copies confirms the files
+      # parse and the task structure is sound.
+      #
+      # It does not confirm that ansible.controller accepts these module
+      # parameters - the two collections drift. That check lives in
+      # .github/workflows/controller-validate.yml and requires a Hub token.
+      - name: Controller syntax smoke test (awx.awx namespace)
+        run: |
+          ansible-galaxy collection install "awx.awx:==${AWX_AWX_VERSION}"
+          mkdir -p /tmp/ctl && cp -r controller/surveys /tmp/ctl/
+          shopt -s nullglob
+          checked=0
+          for f in controller/*.yml controller/credential_types/*.yml; do
+            # requirements.yml is a Galaxy manifest, not a playbook.
+            [ "$(basename "$f")" = "requirements.yml" ] && continue
+            rel="${f#controller/}"
+            mkdir -p "/tmp/ctl/$(dirname "$rel")"
+            sed 's/ansible\.controller\./awx.awx./g' "$f" > "/tmp/ctl/$rel"
+            echo "== $f"
+            # Run from the repository root. ansible.cfg sets a RELATIVE
+            # collections_path, so cd-ing into /tmp/ctl first makes it resolve
+            # to /tmp/ctl/collections and awx.awx stops being found.
+            ansible-playbook --syntax-check "/tmp/ctl/$rel"
+            checked=$((checked + 1))
+          done
+          echo "smoke-tested $checked controller playbook(s)"
+          if [ "$checked" -lt 4 ]; then
+            echo "::error::expected at least 4 controller playbooks, tested $checked"
+            exit 1
+          fi
+
+  demo:
+    name: Demo scenarios (ansible-core ${{ matrix.ansible }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ansible: ["2.15.13", "2.16.14", "latest"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ansible-core ${{ matrix.ansible }}
+        run: |
+          if [ "${{ matrix.ansible }}" = "latest" ]; then
+            pip install ansible-core
+          else
+            pip install "ansible-core==${{ matrix.ansible }}"
+          fi
+          pip install jmespath dnspython netaddr
+          ansible --version | head -1
+
+      - name: Install collections
+        run: ansible-galaxy collection install -r execution-environment/requirements.yml
+
+      # Each node runs in its own process with its own filesystem root and
+      # carries artifacts forward, the way Automation Controller runs a workflow
+      # on OpenShift. A node that depends on a sibling's files fails here.
+      - name: passing scenario reaches the gate
+        run: |
+          out=$(demo/node-isolation-test.sh passing)
+          echo "$out"
+          echo "$out" | grep -q "All nodes succeeded independently" \
+            || { echo "::error::a node failed"; exit 1; }
+          echo "$out" | grep -q "READY_WITH_LIMITATIONS" \
+            || { echo "::error::expected READY_WITH_LIMITATIONS"; exit 1; }
+          # Confirm artifacts crossed a node boundary, so the step cannot pass
+          # with every node having derived nothing.
+          echo "$out" | grep -q "expected_dns" \
+            || { echo "::error::workflow artifacts did not cross node boundaries"; exit 1; }
+
+      - name: failing_dns scenario stops at DNS and blocks the gate
+        run: |
+          out=$(demo/node-isolation-test.sh failing_dns)
+          echo "$out"
+          echo "$out" | grep -q "NOT_READY" \
+            || { echo "::error::expected NOT_READY"; exit 1; }
+          echo "$out" | grep -q "10_validate_dns" \
+            || { echo "::error::DNS branch should have failed"; exit 1; }
+          echo "$out" | grep -q "20_readiness_report" \
+            || { echo "::error::the report node must fail, which is what makes the approval gate unreachable"; exit 1; }
+
+  docs:
+    name: Documentation and fixture checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+      - name: repo_checks unit tests
+        run: python3 .github/scripts/test_repo_checks.py
+      - name: Docs, fixtures and build instructions match the tree
+        run: python3 .github/scripts/repo_checks.py
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          fetch-depth: 0    # gitleaks needs history, not just the tip
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      # Narrow and repository-specific: literal values under credential-shaped
+      # keys. A referenced value such as {{ bmc_password }} is correct here and
+      # is not flagged.
+      - name: Custom scan for literal credentials
+        run: python3 .github/scripts/secret_scan.py
+
+      # Pinned and invoked directly rather than through the action, so the
+      # tracked tree and the full history are two separately named steps.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL -o /tmp/gl.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gl.tar.gz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      # Exported from HEAD rather than scanned in place: `gitleaks dir .` walks
+      # everything on disk, so once collections/ansible_collections exists it
+      # would report on vendored third-party content. Exporting scans exactly
+      # what the repository publishes.
+      - name: Gitleaks - tracked tree at HEAD
+        run: |
+          mkdir -p /tmp/export
+          git archive HEAD | tar -x -C /tmp/export
+          gitleaks dir /tmp/export --config .gitleaks.toml --no-banner
+
+      - name: Gitleaks - full history
+        run: gitleaks git . --config .gitleaks.toml --log-opts="--all" --no-banner
+
+      # There is no .gitleaksignore and no allowlist. Either would let a finding
+      # be suppressed silently, so their absence is asserted rather than assumed.
+      - name: No suppression mechanism
+        run: |
+          if [ -e .gitleaksignore ]; then
+            echo "::error::.gitleaksignore exists; findings can be suppressed silently"
+            exit 1
+          fi
+          # Parsed, not grepped: .gitleaks.toml discusses allowlists in its
+          # comments, so a grep for the word would fail a correct config.
+          python3 - <<'PY'
+          import sys, tomllib
+          cfg = tomllib.load(open(".gitleaks.toml", "rb"))
+
+          def find(node, path=""):
+              if isinstance(node, dict):
+                  for k, v in node.items():
+                      if k in ("allowlist", "allowlists"):
+                          yield path + k
+                      yield from find(v, f"{path}{k}.")
+              elif isinstance(node, list):
+                  for i, v in enumerate(node):
+                      yield from find(v, f"{path}{i}.")
+
+          found = list(find(cfg))
+          if found:
+              print(f"::error::.gitleaks.toml declares {found}; findings can be suppressed")
+              sys.exit(1)
+          print("ok: no ignore file, no allowlist")
+          PY
+
+      # Confirms both scanners report injected material with the expected rule
+      # and path, and that a scanner error is not counted as a detection.
+      - name: Secret-scanner negative tests
+        run: .github/scripts/negative_secret_tests.sh

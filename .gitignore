@@ -1,0 +1,43 @@
+# Bundles fetched or unpacked at run time — never commit real site configs
+bundle-*/
+*.zip
+*.iso
+install-config.yaml
+agent-config.yaml
+imageset-config.yaml
+
+# ...except the demo fixtures, which demo mode depends on. These are synthetic
+# values for a cluster that does not exist: no real hostnames, no pull secret,
+# no SSH key, no certificate. Without this exception the rules above exclude
+# them, project sync never sees them, and intake fails on an incomplete bundle.
+!demo/bundle/install-config.yaml
+!demo/bundle/agent-config.yaml
+!demo/bundle/imageset-config.yaml
+
+# Anything that could hold a secret
+*.pem
+*.key
+*.crt
+pull-secret*
+vault-password*
+*.vault
+
+# Generated evidence — retain in the change record, not in Git
+readiness-report-*.html
+readiness-report-*.json
+
+# Ansible / tooling
+collections/ansible_collections/
+*.retry
+.ansible/
+__pycache__/
+*.pyc
+.venv/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# ansible-builder generated build context
+context/

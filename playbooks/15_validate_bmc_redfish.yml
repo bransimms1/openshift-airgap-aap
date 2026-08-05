@@ -1,0 +1,190 @@
+---
+# Out-of-band hardware validation. agent-config.yaml has no bmc: block and the
+# agent-based installer has no out-of-band management driver, so hardware
+# reachability has to be validated outside the installer.
+#
+# Two plays, one file. In demo mode the first runs and the second has no hosts
+# (the bmc group in inventories/demo is deliberately empty). In production the
+# first ends immediately and the second does the real work. The tasks that
+# matter do not change; only the inventory does.
+
+- name: BMC readiness - demo
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+
+    - name: Skip unless demo mode
+      ansible.builtin.meta: end_play
+      when: not (demo_mode | default(false) | bool)
+
+    # No Redfish endpoint exists and no credential is attached. Nothing here
+    # dials out. The branch reports what it is rather than inventing a result.
+    - name: Publish simulated or skipped result
+      ansible.builtin.set_stats:
+        data:
+          check_bmc:
+            status: "{{ 'SKIPPED' if (demo_bmc_mode | default('simulated')) == 'skipped' else 'SIMULATED' }}"
+            hosts: "{{ (expected_macs | default([])) | map(attribute='host') | list }}"
+            detail: >-
+              Demo mode, no Redfish endpoint. In production this reads system
+              and firmware inventory over Redfish, compares installed BIOS
+              against the approved manifest, asserts BIOS attributes in check
+              mode, and confirms the boot device rootDeviceHints points at is
+              actually presented. Credentials come from the AAP custom
+              credential type and never appear in job output.
+
+- name: Validate bare-metal readiness over Redfish
+  hosts: bmc
+  gather_facts: false
+  tasks:
+
+    - name: Skip in demo mode
+      ansible.builtin.meta: end_play
+      when: demo_mode | default(false) | bool
+
+    - name: Read system inventory
+      community.general.redfish_info:
+        category: Systems
+        command: GetSystemInventory
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: "{{ bmc_validate_certs }}"
+      register: _sys
+      failed_when: false
+      no_log: true          # credentials never reach the job output
+
+    - name: Read firmware inventory
+      community.general.redfish_info:
+        category: Update
+        command: GetFirmwareInventory
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: "{{ bmc_validate_certs }}"
+      register: _fw
+      failed_when: false
+      no_log: true
+
+    # Both reads above use failed_when: false so that an unreachable BMC still
+    # reaches the set_stats below. Because failures are suppressed, _sys.failed
+    # cannot distinguish a failure from a success, so reachability is determined
+    # from the returned system record instead.
+    #
+    # An empty dict is still a mapping, so reject('eq', {}) is required: a BMC
+    # exposing several systems - a blade chassis, or an unpopulated slot - can
+    # return an empty first record ahead of a populated one.
+    - name: Derive the system record Redfish returned, if any
+      ansible.builtin.set_fact:
+        _bmc_system: >-
+          {{ (_sys.redfish_facts.system.entries | default([]))
+             | map('last') | select('mapping') | reject('eq', {})
+             | first | default({}, true) }}
+
+    - name: Derive whether the BMC answered with usable system data
+      ansible.builtin.set_fact:
+        # Missing entries, an empty list, or a record with nothing in it all
+        # mean the same thing operationally: nothing can prepare, boot or
+        # verify this host.
+        _bmc_reachable: "{{ _bmc_system is mapping and _bmc_system | length > 0 }}"
+
+    - name: Derive the BIOS firmware records the BMC reported
+      ansible.builtin.set_fact:
+        # Derived before set_stats so the drift finding is published. The
+        # assertion further down runs afterwards and is non-blocking; it exists
+        # to surface the finding in the job output.
+        _bmc_bios_entries: >-
+          {{ (_fw.redfish_facts.firmware.entries | default([]))
+             | selectattr('Name', 'defined') | selectattr('Name', 'search', 'BIOS')
+             | selectattr('Version', 'defined') | list }}
+        # An inventory that declares no baseline is a configuration gap, not a
+        # reason to lose the branch. Defaulting keeps set_stats resolvable so the
+        # report still receives a verdict for this host.
+        _bmc_bios_expected: "{{ (firmware_baseline | default({})).bios_version | default('unset') }}"
+
+    # Dell reports the running and the rollback image under the same Name,
+    # "BIOS", distinguished only by Id (Installed-159-2.15.1 vs
+    # Previous-159-2.14.0). Prefer a record that does not identify itself as a
+    # previous image; fall back to records that carry no Id.
+    - name: Derive the installed BIOS version
+      ansible.builtin.set_fact:
+        _bmc_bios_installed: >-
+          {{ (_bmc_bios_entries | selectattr('Id', 'defined')
+              | rejectattr('Id', 'search', '(?i)^(previous|rollback|backup)')
+              | map(attribute='Version') | first)
+             | default((_bmc_bios_entries | rejectattr('Id', 'defined')
+               | map(attribute='Version') | first), true)
+             | default('unknown', true) }}
+
+    - name: Report system state
+      ansible.builtin.debug:
+        msg: >-
+          {{ node_name }}: power={{ _bmc_system.PowerState | default('unknown') }}
+          model={{ _bmc_system.Model | default('unknown') }}
+          reachable={{ _bmc_reachable }}
+
+    # --- Dell-specific: certified collection, richer than generic Redfish ----
+    # Included rather than called inline so the module is resolved at runtime.
+    # A direct reference is resolved at parse time and would fail the whole job
+    # in an EE without dellemc.openmanage, even though the task is skipped.
+    - name: Assert BIOS attributes on Dell hardware
+      ansible.builtin.include_tasks: tasks/bmc_dell_bios.yml
+      when: bmc_vendor | default('generic') == 'dell'
+
+    # Published before any assertion below, so a failed BMC branch still
+    # contributes detail to the readiness report.
+    - name: Publish result
+      ansible.builtin.set_stats:
+        data:
+          check_bmc:
+            status: "{{ 'PASS' if _bmc_reachable else 'FAIL' }}"
+            host: "{{ node_name }}"
+            power: "{{ _bmc_system.PowerState | default('unknown') }}"
+            # Dell BIOS ATTRIBUTE drift from tasks/bmc_dell_bios.yml. This is
+            # distinct from firmware version drift, published below.
+            bios_drift: "{{ _bios.changed | default(false) }}"
+            # Firmware VERSION drift, reported but never blocking. Drift is only
+            # claimed when BOTH sides are known: 'unknown' installed means the
+            # BMC exposed no BIOS firmware entry, and 'unset' expected means the
+            # inventory declares no baseline. Either is worth recording, and
+            # neither is the same as "no drift" - which is why both values are
+            # published alongside this flag rather than folded into it.
+            firmware_drift: >-
+              {{ _bmc_bios_installed != 'unknown'
+                 and _bmc_bios_expected != 'unset'
+                 and _bmc_bios_installed != _bmc_bios_expected }}
+            bios_version_installed: "{{ _bmc_bios_installed }}"
+            bios_version_expected: "{{ _bmc_bios_expected }}"
+            reachable: "{{ _bmc_reachable }}"
+
+    - name: BMC must be reachable over Redfish
+      ansible.builtin.fail:
+        msg: >-
+          {{ node_name }} did not answer over Redfish at {{ bmc_address }} with
+          usable system data.
+          Nothing can prepare, boot or verify this host until it does.
+      when: not _bmc_reachable
+
+    # Firmware drift is reported, not blocked: flashing during an install window
+    # is worse than proceeding with a known, recorded deviation. The finding is
+    # published above; this assertion surfaces it in the job output.
+    - name: Firmware must match the approved baseline  # noqa: ignore-errors
+      ansible.builtin.assert:
+        that: _bmc_bios_installed == _bmc_bios_expected
+        fail_msg: >-
+          {{ node_name }} BIOS drift. Approved {{ _bmc_bios_expected }},
+          installed {{ _bmc_bios_installed }}.
+          Report it, stage the update in a window - do not flash during an install.
+      ignore_errors: true   # drift is a finding, not necessarily a blocker
+
+    # Some BMCs do not expose storage over Redfish at all. Absence of the
+    # inventory is a finding worth recording, not proof the device is missing.
+    - name: Confirm the boot device the config expects is actually presented  # noqa: ignore-errors
+      ansible.builtin.assert:
+        that: _bmc_system.Storage is defined
+        fail_msg: >-
+          {{ node_name }} presents no storage over Redfish. rootDeviceHints in
+          agent-config points at a device that may not exist - RHCOS will
+          install somewhere unexpected or not at all.
+      ignore_errors: true

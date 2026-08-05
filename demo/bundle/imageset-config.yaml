@@ -1,0 +1,22 @@
+---
+# DEMO FIXTURE — example oc-mirror v2 ImageSetConfiguration.
+# Not usable for a real mirror; see install-config.yaml.
+#
+# apiVersion must be v2alpha1. v1 emits ImageContentSourcePolicy rather than
+# IDMS/ITMS, and the downstream cluster resource tasks would silently apply
+# nothing — 00_bundle_intake asserts this explicitly.
+apiVersion: mirror.openshift.io/v2alpha1
+kind: ImageSetConfiguration
+mirror:
+  platform:
+    channels:
+      - name: stable-4.20
+        minVersion: 4.20.3
+        maxVersion: 4.20.3
+  operators:
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.20
+      packages:
+        - name: kubernetes-nmstate-operator
+        - name: local-storage-operator
+  additionalImages:
+    - name: registry.redhat.io/ubi9/ubi:latest

@@ -1,0 +1,34 @@
+---
+# Collections the AUTOMATION needs at run time - everything imported by
+# something under playbooks/ or roles/. Automation Controller installs these
+# during project sync, and ansible-lint installs them in CI, so everything
+# here has to be resolvable without Automation Hub credentials.
+#
+# Pinned deliberately. In a disconnected environment these resolve from Private
+# Automation Hub, not galaxy.ansible.com. Pin, sync, sign, verify.
+collections:
+  - name: ansible.utils
+    version: ">=5.1.2"
+  - name: ansible.posix
+    version: ">=1.6.0"
+  - name: community.general      # redfish_info, redfish_command, dig lookup
+    version: ">=9.0.0"
+  - name: community.crypto       # get_certificate, x509_certificate_info
+    version: ">=2.20.0"
+  - name: kubernetes.core        # Day 2
+    version: ">=5.0.0"
+
+# Not here, on purpose:
+#
+#   ansible.controller  needed only to APPLY controller/*.yml, which an
+#                       operator or a pipeline runs - never a playbook in this
+#                       repository. See controller/requirements.yml.
+#   dellemc.openmanage  optional. playbooks/tasks/bmc_dell_bios.yml uses it via
+#                       include_tasks, which resolves at run time, so the
+#                       readiness workflow parses and runs without it. Add it
+#                       where you have Dell hardware.
+#   redhat.openshift    not imported anywhere in this repository.
+#
+# All three are Automation Hub content. Listing them here would make project
+# sync and CI require Hub credentials for collections the automation never
+# loads.

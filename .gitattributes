@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Binary deliverables: don't try to diff or normalise these
+*.iso   binary
+*.png   binary
+*.jpg   binary
+
+# Collapse noisy deliverables in PR diffs
+docs/architecture.svg linguist-documentation

@@ -1,0 +1,78 @@
+---
+# DEMO FIXTURE — example agent-based installer host definitions.
+# Not installable; see install-config.yaml in this directory.
+#
+# Note what is NOT here: there is no bmc: block. The agent-based installer has
+# no out-of-band management driver, which is exactly why hardware preparation
+# lives outside the bundle and why 15_validate_bmc_redfish.yml exists at all.
+#
+# rendezvousIP is an address of a control-plane host below, MACs are unique,
+# and every host declares rootDeviceHints — all three are asserted by
+# 01_validate_bundle.yml.
+apiVersion: v1alpha1
+kind: AgentConfig
+metadata:
+  name: ocp-demo
+
+rendezvousIP: 10.42.10.11
+
+additionalNTPSources:
+  - 10.42.10.53
+
+hosts:
+  - hostname: master-0
+    role: master
+    rootDeviceHints:
+      deviceName: /dev/disk/by-id/scsi-3600508b1001c0demo0
+    interfaces:
+      - name: eno1
+        macAddress: "52:54:00:de:00:01"
+    networkConfig:
+      interfaces:
+        - name: eno1
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            dhcp: false
+            address:
+              - ip: 10.42.10.11
+                prefix-length: 24
+
+  - hostname: master-1
+    role: master
+    rootDeviceHints:
+      deviceName: /dev/disk/by-id/scsi-3600508b1001c0demo1
+    interfaces:
+      - name: eno1
+        macAddress: "52:54:00:de:00:02"
+    networkConfig:
+      interfaces:
+        - name: eno1
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            dhcp: false
+            address:
+              - ip: 10.42.10.12
+                prefix-length: 24
+
+  - hostname: master-2
+    role: master
+    rootDeviceHints:
+      deviceName: /dev/disk/by-id/scsi-3600508b1001c0demo2
+    interfaces:
+      - name: eno1
+        macAddress: "52:54:00:de:00:03"
+    networkConfig:
+      interfaces:
+        - name: eno1
+          type: ethernet
+          state: up
+          ipv4:
+            enabled: true
+            dhcp: false
+            address:
+              - ip: 10.42.10.13
+                prefix-length: 24

@@ -1,0 +1,25 @@
+---
+# Demo-mode DNS remediation. In production this step is a change request to the
+# network team; the workflow supplies the exact record, value and justification.
+- name: Add the missing api-int record
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+
+    - name: Uncomment the record in the lab zone file
+      ansible.builtin.replace:
+        path: "{{ lab_zone_file | default('/opt/demo/db.example.com') }}"
+        regexp: '^;\s*(api-int.*)$'
+        replace: '\1'
+
+    - name: Reload the resolver
+      ansible.builtin.command: podman restart coredns
+      changed_when: true
+
+    - name: Confirm the record now resolves
+      ansible.builtin.debug:
+        msg: >-
+          api-int.{{ cluster_fqdn }} ->
+          {{ lookup('community.general.dig', 'api-int.' ~ cluster_fqdn,
+                    '@' ~ dns_servers[0], errors='ignore') }}

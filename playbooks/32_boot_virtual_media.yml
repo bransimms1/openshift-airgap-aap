@@ -1,0 +1,60 @@
+---
+# Real Redfish. Against sushy-emulator in the demo, against iDRAC in production.
+- name: Boot hosts from the agent ISO
+  hosts: bmc
+  gather_facts: false
+  serial: 1          # rendezvous host first, then the rest
+  tasks:
+
+    # Hard stop, for the same reason as 31: nothing is powered on in demo mode.
+    - name: DEMO - refuse to touch hardware
+      when: demo_mode | default(false) | bool
+      block:
+        - name: Say so plainly in the job output
+          ansible.builtin.debug:
+            msg: |
+              DEMO MODE - no virtual media attached, no host powered on.
+
+              In a real run this attaches the ISO over Redfish and boots the
+              rendezvous host first, serial 1. In demo mode it stops here.
+        - name: End the play
+          ansible.builtin.meta: end_play
+
+    - name: Insert virtual media
+      community.general.redfish_command:
+        category: Manager
+        command: VirtualMediaInsert
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: "{{ bmc_validate_certs }}"
+        virtual_media:
+          image_url: "{{ boot_artifacts_base_url }}/agent.x86_64.iso"
+          media_types: [CD, DVD]
+      no_log: true
+
+    - name: Set one-time boot to virtual CD
+      community.general.redfish_command:
+        category: Systems
+        command: SetOneTimeBoot
+        bootdevice: Cd
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: "{{ bmc_validate_certs }}"
+      no_log: true
+
+    - name: Power on
+      community.general.redfish_command:
+        category: Systems
+        command: PowerOn
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: "{{ bmc_validate_certs }}"
+      no_log: true
+
+# Demo mode stops here. On real hardware the next steps are:
+#   openshift-install --dir <dir> agent wait-for bootstrap-complete
+#   openshift-install --dir <dir> agent wait-for install-complete
+# Both are long-running waits and are left to the operator.

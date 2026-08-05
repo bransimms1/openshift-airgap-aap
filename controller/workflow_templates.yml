@@ -1,0 +1,115 @@
+---
+# The graph is the governance control. all_parents_must_converge on the report
+# node is why a failed validation stops the run - it is a property of the
+# workflow, not a convention anyone has to remember.
+- name: Define the site readiness workflow
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # Matches controller/job_templates.yml. true points the workflow at the
+    # demo inventory; the graph, the node names and the gate are identical
+    # either way.
+    controller_demo_setup: true
+    controller_organization: "Platform Engineering"
+    controller_inventory_demo: "demo"
+    controller_inventory_prod: "site-a"
+    ctl: &ctl
+      controller_host: "{{ controller_hostname | default(omit) }}"
+      controller_oauthtoken: "{{ controller_token | default(omit) }}"
+  tasks:
+
+    - ansible.controller.workflow_job_template:
+        <<: *ctl
+        name: "openshift-site-readiness"
+        organization: "{{ controller_organization }}"
+        inventory: "{{ controller_inventory_demo if controller_demo_setup | bool else controller_inventory_prod }}"
+        survey_enabled: true
+        survey_spec: "{{ lookup('file', 'surveys/cluster_readiness.json') | from_json }}"
+        ask_variables_on_launch: false
+        ask_inventory_on_launch: true
+
+    # --- intake -----------------------------------------------------------
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
+        identifier: "intake"
+        unified_job_template: "00-bundle-intake"
+
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
+        identifier: "validate-bundle"
+        unified_job_template: "01-validate-bundle"
+        parents: [{ identifier: "intake", type: success }]
+
+    # --- parallel validation fan-out --------------------------------------
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
+        identifier: "{{ item }}"
+        unified_job_template: "{{ item }}"
+        parents: [{ identifier: "validate-bundle", type: success }]
+      loop:
+        - "10-validate-dns"
+        - "11-validate-ntp"
+        - "12-validate-registry"
+        - "13-validate-vips"
+        - "14-validate-bastion"
+        - "15-validate-bmc"
+
+    # --- convergence + evidence -------------------------------------------
+    # Runs on success AND failure: a failed run still produces a report.
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
+        identifier: "readiness-report"
+        unified_job_template: "20-readiness-report"
+        all_parents_must_converge: true
+        parents:
+          - { identifier: "10-validate-dns",      type: always }
+          - { identifier: "11-validate-ntp",      type: always }
+          - { identifier: "12-validate-registry", type: always }
+          - { identifier: "13-validate-vips",     type: always }
+          - { identifier: "14-validate-bastion",  type: always }
+          - { identifier: "15-validate-bmc",      type: always }
+
+    # --- the gate ---------------------------------------------------------
+    # Approval hangs off the REPORT, not off the validation jobs. The thing a
+    # human authorises is the evidence, not the fact that six jobs finished.
+    #
+    # This works because 20-readiness-report fails deliberately when the
+    # verdict is NOT_READY: the success edge below is then never taken and the
+    # gate is unreachable. A verdict of READY or READY_WITH_LIMITATIONS lets
+    # the report succeed and the approver sees the report - including anything
+    # that was SIMULATED or SKIPPED - before deciding.
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
+        identifier: "approve-execute"
+        approval_node:
+          name: "Authorise execution"
+          description: >-
+            The readiness report has been produced and the environment is READY
+            or READY_WITH_LIMITATIONS. Review the report before approving:
+            anything listed as SIMULATED or SKIPPED was not verified against a
+            real environment. Approving permits ISO generation and virtual-media
+            boot against the hosts in the selected inventory.
+          timeout: 3600
+        parents:
+          - { identifier: "readiness-report", type: success }
+
+    # --- execution, only after a human says so -----------------------------
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
+        identifier: "generate-iso"
+        unified_job_template: "31-generate-agent-iso"
+        parents: [{ identifier: "approve-execute", type: success }]
+
+    - ansible.controller.workflow_job_template_node:
+        <<: *ctl
+        workflow: "openshift-site-readiness"
+        identifier: "boot-hosts"
+        unified_job_template: "32-boot-virtual-media"
+        parents: [{ identifier: "generate-iso", type: success }]

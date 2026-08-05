@@ -1,0 +1,18 @@
+# Gitleaks configuration.
+#
+# The default rule set is used unmodified: cloud keys, bearer tokens, PEM
+# material, kubeconfigs, registry auth and generic high-entropy strings. The
+# .github directory is not excluded.
+#
+# There is no allowlist. A path-scoped allowlist exempts an entire file, which
+# would hide a real credential added to that file later. If a finding is
+# genuinely a false positive, prefer, in order:
+#   1. change the content so it no longer looks like a credential
+#   2. a .gitleaksignore fingerprint, which pins one finding in one file at one
+#      commit and expires when the line changes
+#   3. an allowlist entry with condition = "AND", an anchored path regex, and a
+#      regexTarget - never a bare path
+title = "openshift-airgap-aap"
+
+[extend]
+useDefault = true

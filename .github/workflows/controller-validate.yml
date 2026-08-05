@@ -1,0 +1,95 @@
+---
+# Parse controller-as-code against the certified ansible.controller collection.
+#
+# Covers:
+#   * each controller playbook parses
+#   * ansible.controller resolves every module referenced
+#   * the task structure is accepted by the certified collection
+#
+# Not covered:
+#   * that applying it to an Automation Controller succeeds
+#   * run-time API compatibility with any particular AAP version
+#   * that objects are created, updated or converge as intended
+#   * module parameter validity - --syntax-check resolves modules and checks
+#     that the play is well formed; it does not evaluate parameter semantics
+#
+# Parameter validation requires an apply against a disposable Controller, which
+# mutates a live system and therefore belongs in an opt-in integration job
+# against an instance you own.
+#
+# Manual dispatch only: a fork pull request must not reach a secret, and a
+# required check that forks cannot run would block outside contributions.
+name: Certified ansible.controller parse check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  preflight:
+    name: Token available
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - id: check
+        env:
+          HUB_TOKEN: ${{ secrets.AUTOMATION_HUB_TOKEN }}
+        run: |
+          if [ -z "$HUB_TOKEN" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::AUTOMATION_HUB_TOKEN is not set."
+            echo "::warning::The parse check below will be SKIPPED, not passed."
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  parse-check:
+    name: Parse against certified collection
+    needs: preflight
+    # Skipped, not passed, when no token is configured. A skipped job is
+    # visibly distinct, so the workflow does not report success for a check
+    # that did not run.
+    if: needs.preflight.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ansible-core
+        run: pip install "ansible-core==${{ vars.ANSIBLE_CORE_PRIMARY || '2.16.14' }}"
+
+      - name: Install ansible.controller from Automation Hub
+        env:
+          HUB_TOKEN: ${{ secrets.AUTOMATION_HUB_TOKEN }}
+        run: |
+          cat > ~/.ansible.cfg <<EOF
+          [galaxy]
+          server_list = automation_hub
+
+          [galaxy_server.automation_hub]
+          url = https://console.redhat.com/api/automation-hub/content/published/
+          auth_url = https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+          token = ${HUB_TOKEN}
+          EOF
+          ansible-galaxy collection install -r controller/requirements.yml
+
+      - name: Parse-check every controller playbook
+        run: |
+          shopt -s nullglob
+          checked=0
+          for f in controller/*.yml controller/credential_types/*.yml; do
+            # requirements.yml is a Galaxy manifest, not a playbook.
+            [ "$(basename "$f")" = "requirements.yml" ] && continue
+            echo "== $f"
+            ansible-playbook --syntax-check "$f"
+            checked=$((checked + 1))
+          done
+          echo "parsed $checked controller playbook(s)"
+          # Guard against a glob that matches nothing.
+          if [ "$checked" -lt 4 ]; then
+            echo "::error::expected at least 4 controller playbooks, parsed $checked"
+            exit 1
+          fi

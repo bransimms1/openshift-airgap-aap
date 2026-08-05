@@ -1,0 +1,111 @@
+---
+# Workflow node 2. Semantic validation of the config itself, before we go
+# anywhere near the network. These are the mistakes that are cheap to make in a
+# wizard and expensive to discover at bootstrap.
+#
+# This node reconstructs the parsed documents itself rather than inheriting
+# them. ic, ac and isc are set_fact values local to whichever play created
+# them; on AAP running on OpenShift the intake node ran in a different pod and
+# those facts do not exist here. Including the role re-derives them from source
+# — the repository in demo mode, the bundle URL in production — so this job is
+# correct whether it runs as workflow node 2 or is relaunched on its own.
+- name: Validate bundle internal consistency
+  hosts: bastion
+  gather_facts: false
+  roles:
+    - role: airgap_bundle_facts
+  tasks:
+
+    - name: VIPs must sit inside a declared machine network
+      ansible.builtin.assert:
+        that:
+          - api_vips | ansible.utils.ipaddr(machine_networks[0]) | length > 0
+          - ingress_vips | ansible.utils.ipaddr(machine_networks[0]) | length > 0
+        fail_msg: >-
+          apiVIPs {{ api_vips }} / ingressVIPs {{ ingress_vips }} are outside
+          machineNetwork {{ machine_networks }}. keepalived will not bind them.
+
+    - name: API and ingress VIPs must differ
+      ansible.builtin.assert:
+        that: api_vips | intersect(ingress_vips) | length == 0
+        fail_msg: "apiVIPs and ingressVIPs overlap: {{ api_vips }} / {{ ingress_vips }}"
+
+    - name: Cluster, service and machine networks must not overlap
+      ansible.builtin.assert:
+        that:
+          - ic.networking.clusterNetwork[0].cidr
+              | ansible.utils.network_in_network(machine_networks[0]) == false
+          - ic.networking.serviceNetwork[0]
+              | ansible.utils.network_in_network(machine_networks[0]) == false
+        fail_msg: >-
+          Overlapping CIDRs. cluster={{ ic.networking.clusterNetwork[0].cidr }}
+          service={{ ic.networking.serviceNetwork[0] }} machine={{ machine_networks[0] }}
+
+    - name: Host MAC addresses must be unique across the inventory
+      ansible.builtin.assert:
+        that: >-
+          (ac.hosts | map(attribute='interfaces') | flatten
+             | map(attribute='macAddress') | list) | length ==
+          (ac.hosts | map(attribute='interfaces') | flatten
+             | map(attribute='macAddress') | list) | unique | length
+        fail_msg: "Duplicate MAC address in agent-config.yaml hosts."
+      when: ac is defined
+
+    # Uniqueness is not enough: a typo like 52:54:00:de:m0:01 is unique and
+    # syntactically invalid. The agent-based installer matches hosts by MAC, so
+    # a malformed one means that host is never recognised and the install waits
+    # for a machine that, as far as it is concerned, never appeared.
+    # Plain regex rather than a filter plugin, so this needs no extra collection.
+    - name: Host MAC addresses must be syntactically valid
+      ansible.builtin.assert:
+        that: item is match('^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$')
+        fail_msg: >-
+          "{{ item }}" is not a valid MAC address. Expected six colon-separated
+          hexadecimal octets, for example 52:54:00:de:00:01.
+        success_msg: "{{ item }} is well formed"
+      loop: >-
+        {{ ac.hosts | map(attribute='interfaces') | flatten
+           | map(attribute='macAddress') | list }}
+      when: ac is defined
+
+    # noqa on the name: it starts with the literal agent-config key, which is
+    # camelCase. Renaming it to satisfy casing would obscure what is checked.
+    - name: rendezvousIP must belong to a declared control-plane host  # noqa: name[casing]
+      ansible.builtin.assert:
+        that: >-
+          rendezvous_ip in (ac.hosts
+            | selectattr('role', 'eq', 'master')
+            | map(attribute='networkConfig.interfaces') | flatten
+            | map(attribute='ipv4.address') | flatten
+            | map(attribute='ip') | list)
+        fail_msg: >-
+          rendezvousIP {{ rendezvous_ip }} is not an address of any control-plane
+          host. The agent-based installer will never reach assisted-service.
+      when:
+        - ac is defined
+        - rendezvous_ip is defined
+
+    - name: Every host must declare rootDeviceHints
+      ansible.builtin.assert:
+        that: item.rootDeviceHints is defined
+        fail_msg: >-
+          {{ item.hostname }} has no rootDeviceHints. RHCOS will pick a device,
+          and on a machine with a RAID volume and local NVMe that is a coin flip.
+      loop: "{{ ac.hosts | default([]) }}"
+      loop_control:
+        label: "{{ item.hostname }}"
+
+    - name: A disconnected install must declare a trust bundle
+      ansible.builtin.assert:
+        that: trust_bundle | length > 0
+        fail_msg: >-
+          No additionalTrustBundle. The cluster will not trust the mirror
+          registry's CA and every image pull will fail x509 verification.
+
+    - name: NTP sources must be set for bare metal
+      ansible.builtin.assert:
+        that: ntp_sources | length > 0
+        fail_msg: >-
+          No additionalNTPSources. Clock skew breaks etcd and certificate
+          validation, and it fails late and confusingly.
+      when: ac is defined

@@ -1,0 +1,17 @@
+bind-utils [platform:rpm]   # dig, for human-readable check output
+openssl    [platform:rpm]
+iputils    [platform:rpm]   # ping, for the VIP silence check
+
+# chrony is NOT here, deliberately.
+#
+# ee-minimal-rhel9 is built on UBI9-minimal, whose repositories do not carry
+# chrony, and microdnf has no way to skip an unavailable package - the whole
+# build step fails. Verified directly against the base image.
+#
+# 11_validate_ntp.yml calls "chronyd -Q" only in production, against the
+# validators group, which in production is a real bastion that already has
+# chrony installed. Demo mode reports the branch SIMULATED and never shells out.
+#
+# If you build a production EE on a fuller base (ee-supported-rhel9, or your own
+# image on full RHEL), add back:
+#   chrony [platform:rpm]

@@ -1,0 +1,58 @@
+---
+- name: Validate time sources
+  hosts: validators
+  gather_facts: false
+  tasks:
+
+    # No NTP server exists in demo mode and chronyd is not present in the
+    # execution environment, so the branch reports SIMULATED rather than
+    # attempting a query.
+    - name: DEMO - record the branch as simulated
+      when: demo_mode | default(false) | bool
+      block:
+        - name: Publish simulated result
+          ansible.builtin.set_stats:
+            data:
+              check_ntp:
+                status: SIMULATED
+                sources: "{{ ntp_sources | default([]) }}"
+                detail: >-
+                  Demo mode. In production this queries each declared source
+                  directly from the install subnet with chronyd -Q and asserts
+                  that it answered.
+        - name: End the play
+          ansible.builtin.meta: end_play
+
+    - name: Query each NTP source directly from the install subnet
+      ansible.builtin.command:
+        cmd: "chronyd -Q -t 5 'server {{ item }} iburst'"
+      loop: "{{ ntp_sources }}"
+      register: _ntp
+      changed_when: false
+      failed_when: false
+
+    - name: Check local clock offset
+      ansible.builtin.command: chronyc -n tracking
+      register: _tracking
+      changed_when: false
+      failed_when: false
+
+    # Published before the failure below so a failed branch still reaches the
+    # readiness report.
+    - name: Publish result
+      ansible.builtin.set_stats:
+        data:
+          check_ntp:
+            status: "{{ 'FAIL' if (_ntp.results | rejectattr('rc', 'eq', 0) | list | length > 0) else 'PASS' }}"
+            sources: "{{ ntp_sources }}"
+            unreachable: "{{ _ntp.results | rejectattr('rc', 'eq', 0) | map(attribute='item') | list }}"
+            tracking: "{{ _tracking.stdout_lines | default([]) }}"
+
+    - name: Assert every declared source answered
+      ansible.builtin.fail:
+        msg: >-
+          NTP source(s) {{ _ntp.results | rejectattr('rc', 'eq', 0)
+          | map(attribute='item') | join(', ') }} did not answer from this
+          subnet. Clock skew fails late: etcd leader elections and certificate
+          validation break long after the installer has moved on.
+      when: _ntp.results | rejectattr('rc', 'eq', 0) | list | length > 0

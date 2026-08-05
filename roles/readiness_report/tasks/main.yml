@@ -1,0 +1,130 @@
+---
+# Runs on both the success and failure paths, so nothing here may assume a
+# branch succeeded or that it published anything at all. A failed run must still
+# produce evidence.
+#
+# Every input arrives as a workflow artifact. This role reads no file written
+# by another workflow node, because on OpenShift there is no shared filesystem
+# between execution pods.
+#
+# Four per-branch states:
+#   PASS       the check ran and the environment satisfied it
+#   FAIL       the check ran and it did not
+#   SIMULATED  demo mode; the check did not contact anything real
+#   SKIPPED    the branch did not run, or was deliberately not run
+#
+# Three overall states:
+#   READY                   every branch executed and passed
+#   READY_WITH_LIMITATIONS  nothing failed, but something was not executed
+#                           against a real environment
+#   NOT_READY               at least one branch failed
+
+- name: Normalise every branch into a known state
+  ansible.builtin.set_fact:
+    _checks:
+      dns: "{{ check_dns | default({'status': 'SKIPPED', 'detail': 'Branch did not report.'}) }}"
+      ntp: "{{ check_ntp | default({'status': 'SKIPPED', 'detail': 'Branch did not report.'}) }}"
+      registry: "{{ check_registry | default({'status': 'SKIPPED', 'detail': 'Branch did not report.'}) }}"
+      vips: "{{ check_vips | default({'status': 'SKIPPED', 'detail': 'Branch did not report.'}) }}"
+      bastion: "{{ check_bastion | default({'status': 'SKIPPED', 'detail': 'Branch did not report.'}) }}"
+      bmc: "{{ check_bmc | default({'status': 'SKIPPED', 'detail': 'Branch did not report.'}) }}"
+
+- name: Derive the overall verdict
+  ansible.builtin.set_fact:
+    _failed_checks: >-
+      {{ _checks | dict2items | selectattr('value.status', 'defined')
+         | selectattr('value.status', 'eq', 'FAIL') | map(attribute='key') | list }}
+    _not_executed: >-
+      {{ _checks | dict2items | selectattr('value.status', 'defined')
+         | selectattr('value.status', 'in', ['SIMULATED', 'SKIPPED']) | map(attribute='key') | list }}
+
+- name: Grade readiness
+  ansible.builtin.set_fact:
+    _overall: >-
+      {{ 'NOT_READY' if _failed_checks | length > 0
+         else ('READY_WITH_LIMITATIONS' if _not_executed | length > 0 else 'READY') }}
+
+- name: Assemble the result set
+  ansible.builtin.set_fact:
+    report:
+      cluster: "{{ cluster_fqdn | default('unknown') }}"
+      release: "{{ ocp_release | default('unknown') }}"
+      bundle_sha256: "{{ bundle_sha256 | default('unknown') }}"
+      bundle_is_draft: "{{ bundle_is_draft | default(false) }}"
+      demo_mode: "{{ demo_mode | default(false) | bool }}"
+      demo_scenario: "{{ demo_scenario | default('n/a') }}"
+      overall: "{{ _overall }}"
+      failed_checks: "{{ _failed_checks }}"
+      not_executed: "{{ _not_executed }}"
+      approval_requested_from: "{{ approver_group | default('not specified') }}"
+      generated: "{{ ansible_date_time.iso8601 }}"
+      launched_by: "{{ awx_user_name | default(tower_user_name) | default('cli') }}"
+      job_id: "{{ awx_job_id | default(tower_job_id) | default('n/a') }}"
+      workflow_job_id: "{{ awx_workflow_job_id | default('n/a') }}"
+      execution_environment: "{{ lookup('env', 'AWX_CONTAINER_IMAGE') | default('local', true) }}"
+      checks: "{{ _checks }}"
+
+- name: Create this job's scratch directory
+  ansible.builtin.file:
+    path: "{{ report_workdir }}"
+    state: directory
+    mode: "0750"
+
+- name: Render the human-readable report
+  ansible.builtin.template:
+    src: readiness_report.html.j2
+    dest: "{{ report_workdir }}/readiness-report-{{ cluster_name | default('cluster') }}-{{ ansible_date_time.epoch }}.html"
+    mode: "0644"
+
+- name: Write the machine-readable report
+  ansible.builtin.copy:
+    content: "{{ report | to_nice_json }}"
+    dest: "{{ report_workdir }}/readiness-report-{{ cluster_name | default('cluster') }}-{{ ansible_date_time.epoch }}.json"
+    mode: "0644"
+
+# The published artifact is what survives the pod and what downstream nodes and
+# the change record consume. The rendered files are a convenience.
+- name: Publish the summary to the workflow
+  ansible.builtin.set_stats:
+    data:
+      readiness_report: "{{ report }}"
+      readiness_overall: "{{ _overall }}"
+
+- name: Show the verdict in the job output
+  ansible.builtin.debug:
+    msg: |
+      READINESS: {{ report.overall }}
+        cluster    : {{ report.cluster }}
+        release    : {{ report.release }}
+        input sha  : {{ report.bundle_sha256[:12] }}
+        {{ 'DEMO MODE - scenario ' ~ report.demo_scenario if report.demo_mode else 'live environment' }}
+
+      {% for name, c in report.checks.items() %}
+        {{ '%-9s'|format(name) }} {{ c.status | default('UNKNOWN') }}
+      {% endfor %}
+
+      {% if report.overall == 'NOT_READY' %}
+      FAILED: {{ report.failed_checks | join(', ') }}
+      This job fails deliberately, which makes the approval gate unreachable.
+      Nothing downstream can run until the environment is fixed and revalidated.
+      {% elif report.overall == 'READY_WITH_LIMITATIONS' %}
+      Nothing failed, but these were not executed against a real environment:
+        {{ report.not_executed | join(', ') }}
+      Approval is available. The approver is accepting those limitations.
+      {% else %}
+      Every branch executed against a real environment and passed.
+      {% endif %}
+
+      Evidence written to {{ report_workdir }} and published as the
+      readiness_report workflow artifact.
+
+# Published above, failed here: the evidence exists either way.
+- name: Fail the report when the environment is NOT_READY
+  ansible.builtin.fail:
+    msg: >-
+      Environment is NOT_READY. Failed checks: {{ report.failed_checks | join(', ') }}.
+      The readiness report has been produced and published. Approval is
+      intentionally unreachable.
+  when:
+    - report_fail_when_not_ready | bool
+    - report.overall == 'NOT_READY'

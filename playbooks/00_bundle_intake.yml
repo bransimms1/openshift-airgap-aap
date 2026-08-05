@@ -1,0 +1,9 @@
+---
+# Workflow node 1. Fetch, digest, unpack, gate.
+# Read-only with respect to the target environment: this touches nothing but
+# the bastion's own filesystem.
+- name: Bundle intake and gate
+  hosts: bastion
+  gather_facts: true
+  roles:
+    - role: airgap_bundle_facts

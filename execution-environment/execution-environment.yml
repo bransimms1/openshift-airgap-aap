@@ -1,0 +1,45 @@
+---
+version: 3
+
+images:
+  base_image:
+    # Supported EE base. Mirror this into your internal registry.
+    name: registry.redhat.io/ansible-automation-platform-26/ee-minimal-rhel9:latest
+
+options:
+  # ee-minimal is built on UBI9-minimal, which ships microdnf and has no
+  # /usr/bin/dnf. Without this, ansible-builder's assemble script calls dnf
+  # and the system-dependency step fails with exit 127.
+  package_manager_path: /usr/bin/microdnf
+
+# BUILD WITH:
+#
+#   ansible-builder build --container-runtime podman \
+#     -f execution-environment/execution-environment.yml \
+#     -t ee-airgap-readiness:1.0 \
+#     --build-arg PYCMD=/usr/bin/python3.12 \
+#     --extra-build-cli-args="--platform linux/amd64"
+#
+# PYCMD is not optional and it cannot be set in this file - ansible-builder
+# rejects it in build_arg_defaults, so it has to be a CLI --build-arg.
+#
+# Why: the image ships Python 3.12 with pip, and /usr/bin/python3 points at it.
+# Installing the system dependencies pulls in RHEL9's default python3.9, which
+# takes over the /usr/bin/python3 alternative and has no pip. The next build
+# step then dies with "No module named pip". Pinning PYCMD to the real
+# interpreter makes the build immune to the switch. Verified against the base
+# image directly.
+#
+# --platform linux/amd64 matters when building on Apple silicon: without it you
+# get an arm64 image that OpenShift cannot run.
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+
+additional_build_steps:
+  append_final:
+    # Provenance: the EE is the answer to "exactly what code ran".
+    - LABEL org.opencontainers.image.title="ee-airgap-readiness"
+    - LABEL org.opencontainers.image.description="OpenShift disconnected readiness and orchestration"

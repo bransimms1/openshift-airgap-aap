@@ -1,0 +1,21 @@
+---
+# Post-approval. First playbook in the repo that changes anything.
+- name: Prepare hardware for installation
+  hosts: bmc
+  gather_facts: false
+  tasks:
+
+    - name: Ensure hosts are powered off before media is attached
+      community.general.redfish_command:
+        category: Systems
+        command: PowerGracefulShutdown
+        baseuri: "{{ bmc_address }}"
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        validate_certs: "{{ bmc_validate_certs }}"
+      no_log: true
+      failed_when: false
+
+    - name: Wait for power off
+      ansible.builtin.pause:
+        seconds: 30

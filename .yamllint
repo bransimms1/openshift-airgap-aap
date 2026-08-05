@@ -1,0 +1,33 @@
+---
+extends: default
+rules:
+  line-length:
+    max: 160
+    level: warning
+  truthy:
+    allowed-values: ["true", "false"]
+  comments:
+    min-spaces-from-content: 1
+
+  # Style tradeoff, not a correctness requirement.
+  #
+  # controller/ and the GitOps play define lists of objects as aligned inline
+  # mappings - { name: "10-validate-dns",  playbook: "...", ... } - so a column
+  # of job templates reads and diffs as a table. The padding inside the braces
+  # and after the commas is what produces that alignment.
+  #
+  # The rules keep their DEFAULT settings and are skipped only on these exact
+  # files, so a file added later cannot inherit the relaxation. The scope probe
+  # step in CI asserts that loose spacing outside this list is still an error.
+  braces:
+    ignore: &aligned_mappings |
+      controller/job_templates.yml
+      controller/notifications.yml
+      controller/workflow_templates.yml
+      playbooks/50_day2_gitops_bootstrap.yml
+  commas:
+    ignore: *aligned_mappings
+
+ignore: |
+  collections/ansible_collections/
+  context/

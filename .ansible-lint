@@ -1,0 +1,33 @@
+---
+# Validation code that gates an installation is production code.
+profile: production
+
+exclude_paths:
+  - collections/ansible_collections/
+  - .github/
+  - docs/
+  - context/
+  # Import-only harness: a list of import_playbook entries, which ansible-lint
+  # counts as unnamed plays. The rest of demo/ IS linted - the fixtures are
+  # data, and any real playbook added there must satisfy the same rules.
+  - demo/smoke-test.yml
+  # controller-as-code imports ansible.controller, certified content from
+  # Automation Hub that a public runner cannot install, so ansible-lint reports
+  # every task as an unknown module. This directory is covered instead by
+  # yamllint and by the awx.awx syntax smoke test in the CI syntax job.
+  - controller/
+
+skip_list:
+  # The role publishes its derived facts through set_stats and every downstream
+  # workflow node consumes them by those exact names - cluster_fqdn, api_vips,
+  # expected_dns. Prefixing them with the role name would rename the published
+  # contract the whole workflow depends on, to satisfy a convention that exists
+  # for variables a role keeps to itself. These are deliberately shared.
+  - var-naming[no-role-prefix]
+
+warn_list:
+  - experimental
+
+# Only paths that are actually linted; controller/ is excluded above.
+kinds:
+  - playbook: "playbooks/*.yml"

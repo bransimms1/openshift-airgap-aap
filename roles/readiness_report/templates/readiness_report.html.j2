@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Readiness report - {{ report.cluster }}</title>
+<style>
+ body{font-family:Arial,Helvetica,sans-serif;margin:2rem;color:#151515;max-width:60rem}
+ h1{font-size:1.5rem;margin-bottom:0}
+ h2{font-size:1.05rem;margin-top:1.75rem}
+ .meta{color:#5a5a5a;font-size:.85rem;margin-bottom:1.5rem}
+ table{border-collapse:collapse;width:100%;margin-bottom:1.5rem}
+ th{background:#151515;color:#fff;text-align:left;padding:.5rem;font-size:.85rem}
+ td{border-bottom:1px solid #ddd;padding:.5rem;font-size:.85rem;vertical-align:top}
+ code{font-family:"Courier New",monospace}
+ .pass{color:#2e6b36;font-weight:bold}
+ .fail{color:#ee0000;font-weight:bold}
+ .simulated{color:#9a6b00;font-weight:bold}
+ .skipped{color:#5a5a5a;font-weight:bold}
+ .not-ready{color:#ee0000;font-weight:bold}
+ .ready{color:#2e6b36;font-weight:bold}
+ .ready-with-limitations{color:#9a6b00;font-weight:bold}
+ .banner{padding:.75rem;margin-bottom:1rem;border:1px solid}
+ .banner-fail{background:#fbeded;border-color:#ebd2d2}
+ .banner-pass{background:#eaf2eb;border-color:#cfe0d1}
+ .banner-demo{background:#fbf2df;border-color:#e8dcc0}
+</style></head><body>
+
+<h1>OpenShift environment readiness</h1>
+<div class="meta">
+  <strong>{{ report.cluster }}</strong> &middot; release {{ report.release }}<br>
+  input sha256 <code>{{ report.bundle_sha256 }}</code><br>
+  generated {{ report.generated }} &middot; job {{ report.job_id }}
+  &middot; workflow {{ report.workflow_job_id }}
+  &middot; launched by {{ report.launched_by }}<br>
+  execution environment <code>{{ report.execution_environment }}</code>
+</div>
+
+{% if report.demo_mode %}
+<div class="banner banner-demo"><strong>Demo mode.</strong>
+Scenario <code>{{ report.demo_scenario }}</code>. Bundle and DNS came from
+fixtures in the repository. Branches marked SIMULATED did not contact a real
+environment, and no installation media was generated.</div>
+{% endif %}
+
+<div class="banner {{ 'banner-fail' if report.overall == 'NOT_READY' else ('banner-demo' if report.overall == 'READY_WITH_LIMITATIONS' else 'banner-pass') }}">
+<strong>{{ report.overall }}</strong>
+{% if report.overall == 'NOT_READY' %}
+&mdash; failed: {{ report.failed_checks | join(', ') }}. The readiness report
+job fails deliberately, which makes the approval gate unreachable.
+{% elif report.overall == 'READY_WITH_LIMITATIONS' %}
+&mdash; nothing failed, but these were not executed against a real
+environment: {{ report.not_executed | join(', ') }}. Approval is available;
+the approver is accepting those limitations.
+{% else %}
+&mdash; every branch executed against a real environment and passed.
+{% endif %}
+<br>Approval requested from: <code>{{ report.approval_requested_from }}</code>
+</div>
+
+{% if report.bundle_is_draft %}
+<div class="banner banner-fail"><strong>Draft export.</strong> DRAFT_NOT_VALIDATED.txt was present
+in this bundle - the export had unresolved warnings.</div>
+{% endif %}
+
+<h2>Summary</h2>
+<table>
+<tr><th>Branch</th><th>Status</th><th>Detail</th></tr>
+{% for name, c in report.checks.items() %}
+{% set st = c.status | default('UNKNOWN') %}
+<tr>
+  <td><code>{{ name }}</code></td>
+  <td class="{{ st | lower | replace('_','-') }}">{{ st }}</td>
+  <td>{{ c.detail | default('') }}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h2>DNS</h2>
+{% if report.checks.dns.records is defined %}
+<table>
+<tr><th>Record</th><th>Expected</th><th>Resolved</th><th>Result</th></tr>
+{% for r in report.checks.dns.records %}
+<tr>
+  <td><code>{{ r.name }}</code></td>
+  <td><code>{{ r.expect | join(', ') if r.expect else 'any A record' }}</code></td>
+  <td><code>{{ r.actual | join(', ') if r.actual else 'NXDOMAIN' }}</code></td>
+  <td class="{{ r.status | lower }}">{{ r.status }}</td>
+</tr>
+{% endfor %}
+</table>
+<p class="meta">Resolved via {{ report.checks.dns.mode | default('unknown') }}
+{% if report.checks.dns.resolvers | default([]) %} &middot; resolvers
+<code>{{ report.checks.dns.resolvers | join(', ') }}</code>{% endif %}.</p>
+{% else %}
+<p>{{ report.checks.dns.status | default('SKIPPED') }} &mdash;
+{{ report.checks.dns.detail | default('no record-level detail was published.') }}</p>
+{% endif %}
+
+<h2>Time, trust and platform</h2>
+<table>
+<tr><th>Check</th><th>Status</th><th>Detail</th></tr>
+<tr><td>NTP sources</td>
+    <td class="{{ report.checks.ntp.status | default('SKIPPED') | lower }}">{{ report.checks.ntp.status | default('SKIPPED') }}</td>
+    <td><code>{{ report.checks.ntp.sources | default([]) | join(', ') }}</code>
+    {% if report.checks.ntp.unreachable | default([]) %} &middot; unreachable:
+    <code>{{ report.checks.ntp.unreachable | default([]) | join(', ') }}</code>{% endif %}</td></tr>
+<tr><td>Mirror registry</td>
+    <td class="{{ report.checks.registry.status | default('SKIPPED') | lower }}">{{ report.checks.registry.status | default('SKIPPED') }}</td>
+    <td><code>{{ report.checks.registry.hosts | default([]) | join(', ') }}</code>
+    &middot; certificate expires {{ report.checks.registry.cert_expires | default('n/a') }}</td></tr>
+<tr><td>VIPs probed (must be free)</td>
+    <td class="{{ report.checks.vips.status | default('SKIPPED') | lower }}">{{ report.checks.vips.status | default('SKIPPED') }}</td>
+    <td><code>{{ report.checks.vips.probed | default([]) | join(', ') }}</code>
+    {% if report.checks.vips.answering | default([]) %} &middot; already answering:
+    <code>{{ report.checks.vips.answering | default([]) | join(', ') }}</code>{% endif %}</td></tr>
+<tr><td>Bastion free space</td>
+    <td class="{{ report.checks.bastion.status | default('SKIPPED') | lower }}">{{ report.checks.bastion.status | default('SKIPPED') }}</td>
+    <td>{{ report.checks.bastion.free_gb | default('n/a') }} GB free
+    &middot; {{ report.checks.bastion.min_required_gb | default('n/a') }} GB required</td></tr>
+<tr><td>BMC</td>
+    <td class="{{ report.checks.bmc.status | default('SKIPPED') | lower }}">{{ report.checks.bmc.status | default('SKIPPED') }}</td>
+    <td>{{ report.checks.bmc.detail | default('power ' ~ (report.checks.bmc.power | default('n/a'))
+      ~ ' &middot; BIOS config drift ' ~ (report.checks.bmc.bios_drift | default('n/a'))
+      ~ ' &middot; firmware drift ' ~ (report.checks.bmc.firmware_drift | default('n/a'))
+      ~ ' (installed ' ~ (report.checks.bmc.bios_version_installed | default('n/a'))
+      ~ ', approved ' ~ (report.checks.bmc.bios_version_expected | default('n/a')) ~ ')') }}</td></tr>
+</table>
+
+<p class="meta">This report was produced as a side effect of the readiness run.
+It names the exact input digest it validated against. Retain it with the
+change record.</p>
+
+</body></html>

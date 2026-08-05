@@ -1,0 +1,31 @@
+---
+# A custom credential type means the BMC password is an object with an owner,
+# injected into the run and redacted from output - not a string in a playbook.
+- name: Define the BMC/Redfish credential type
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.controller.credential_type:
+        name: "BMC / Redfish"
+        kind: cloud
+        inputs:
+          fields:
+            - id: bmc_username
+              type: string
+              label: BMC username
+            - id: bmc_password
+              type: string
+              label: BMC password
+              secret: true
+            - id: bmc_validate_certs
+              type: boolean
+              label: Validate BMC TLS certificates
+          required: [bmc_username, bmc_password]
+        injectors:
+          extra_vars:
+            bmc_username: "{{ '{{ bmc_username }}' }}"
+            bmc_password: "{{ '{{ bmc_password }}' }}"
+            bmc_validate_certs: "{{ '{{ bmc_validate_certs }}' }}"
+        controller_host: "{{ controller_hostname }}"
+        controller_oauthtoken: "{{ controller_token }}"

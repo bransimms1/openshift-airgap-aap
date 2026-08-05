@@ -1,0 +1,63 @@
+{
+  "name": "Site readiness",
+  "description": "The only inputs a requester can supply. Validated, not arbitrary extra vars. Cluster name, base domain, VIPs and MACs are NOT asked for - they are derived from the bundle, which is the source of truth.",
+  "spec": [
+    {
+      "question_name": "Environment",
+      "question_description": "true = Lab. Demo mode: the sample bundle and DNS fixtures in this repository are used, nothing real is contacted, and no installation media is produced. false = Production: live bundle URL, live resolvers, real hardware.",
+      "variable": "demo_mode",
+      "type": "multiplechoice",
+      "required": true,
+      "choices": [
+        "true",
+        "false"
+      ],
+      "default": "true"
+    },
+    {
+      "question_name": "Demo scenario",
+      "question_description": "Lab only. failing_dns omits the api-int record and the DNS branch fails predictably. passing resolves every record and the run reaches the approval gate.",
+      "variable": "demo_scenario",
+      "type": "multiplechoice",
+      "required": true,
+      "choices": [
+        "failing_dns",
+        "passing"
+      ],
+      "default": "failing_dns"
+    },
+    {
+      "question_name": "BMC validation",
+      "question_description": "Lab only. simulated reports what the branch would do against real Redfish. skipped records that it was deliberately not run.",
+      "variable": "demo_bmc_mode",
+      "type": "multiplechoice",
+      "required": true,
+      "choices": [
+        "simulated",
+        "skipped"
+      ],
+      "default": "simulated"
+    },
+    {
+      "question_name": "Approver group",
+      "question_description": "Team that must authorise execution. Recorded in the readiness report as approval_requested_from, so the evidence names who was asked.",
+      "variable": "approver_group",
+      "type": "multiplechoice",
+      "required": true,
+      "choices": [
+        "platform-leads",
+        "site-engineering",
+        "change-board"
+      ],
+      "default": "platform-leads"
+    },
+    {
+      "question_name": "Bundle URL",
+      "question_description": "Production only. Ignored in demo mode, where the sample bundle in demo/bundle/ is used instead.",
+      "variable": "bundle_url",
+      "type": "text",
+      "required": false,
+      "default": "https://artifacts.example.com/airgap/ocp-site-a/latest.zip"
+    }
+  ]
+}

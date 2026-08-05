@@ -1,0 +1,116 @@
+---
+# DNS readiness validation.
+#
+# Every expected record is derived from the bundle. Each record is resolved into
+# a list and evaluated against its own expected values, and the result is
+# published to the workflow before any failure, so a failed DNS branch still
+# contributes detail to the readiness report.
+- name: Validate DNS against the derived expectation set
+  hosts: validators
+  gather_facts: false
+  vars:
+    demo_dns_fixture: "{{ playbook_dir }}/../demo/dns/{{ demo_scenario | default('passing') }}.yml"
+  tasks:
+
+    # In demo mode the zone comes from a fixture in this repository, so the
+    # result does not depend on public DNS or on lab infrastructure.
+    # lookup('file') is correct here: the fixture is a project file, local to
+    # the execution environment. The bundle is remote and uses slurp.
+    - name: DEMO — load the fixture zone
+      ansible.builtin.set_fact:
+        _zone: "{{ (lookup('file', demo_dns_fixture) | from_yaml).zone | default({}) }}"
+      when: demo_mode | default(false) | bool
+
+    - name: DEMO — resolve every required record against the fixture
+      ansible.builtin.set_fact:
+        dns_results: >-
+          {{ dns_results | default([]) + [{
+               'name': item.name,
+               'why': item.why | default('node record must resolve'),
+               'expect': item.expect | default([]),
+               'actual': _zone[item.name] | default([])
+             }] }}
+      loop: "{{ expected_dns }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: demo_mode | default(false) | bool
+
+    # Production: ask the resolvers the cluster will actually use. dig returns
+    # a comma-joined string, or NXDOMAIN — normalise both into a list so the
+    # comparison below is list-to-list in every case.
+    - name: PRODUCTION — resolve every required record
+      ansible.builtin.set_fact:
+        dns_results: >-
+          {{ dns_results | default([]) + [{
+               'name': item.name,
+               'why': item.why | default('node record must resolve'),
+               'expect': item.expect | default([]),
+               'actual': (lookup('community.general.dig', item.name,
+                                 '@' ~ dns_servers[0], qtype='A',
+                                 errors='ignore') | default('', true))
+                         | string | split(',')
+                         | map('trim') | reject('eq', '')
+                         | reject('eq', 'NXDOMAIN') | list
+             }] }}
+      loop: "{{ expected_dns }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: not (demo_mode | default(false) | bool)
+
+    # Each record is evaluated against its own expected values only.
+    #   with expected values -> every expected address must be present
+    #   without              -> the name simply has to resolve to something
+    - name: Grade each record against its own expectation
+      ansible.builtin.set_fact:
+        dns_graded: >-
+          {{ dns_graded | default([]) + [
+               item | combine({'status':
+                 ('PASS' if (
+                    (item.expect | length > 0 and item.actual | length > 0
+                     and (item.expect | difference(item.actual) | length == 0))
+                    or
+                    (item.expect | length == 0 and item.actual | length > 0)
+                 ) else 'FAIL')})
+             ] }}
+      loop: "{{ dns_results | default([]) }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Report each record
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.status }}  {{ item.name }} ->
+          {{ item.actual | join(', ') | default('NXDOMAIN', true) }}
+          {{ '(expected ' ~ item.expect | join(', ') ~ ')' if item.expect else '' }}
+      loop: "{{ dns_graded }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # Published BEFORE the failure below, so the readiness report receives the
+    # detail of a failed branch rather than an empty section.
+    - name: Publish result
+      ansible.builtin.set_stats:
+        data:
+          check_dns:
+            status: "{{ 'FAIL' if (dns_graded | selectattr('status', 'eq', 'FAIL') | list | length > 0) else 'PASS' }}"
+            mode: "{{ 'fixture' if demo_mode | default(false) | bool else 'live' }}"
+            resolvers: "{{ dns_servers | default([]) }}"
+            records: "{{ dns_graded }}"
+            failed_records: "{{ dns_graded | selectattr('status', 'eq', 'FAIL') | map(attribute='name') | list }}"
+
+    - name: Fail with a remediation, not just a stack trace
+      ansible.builtin.fail:
+        msg: |
+          DNS readiness FAILED for {{ cluster_fqdn }}
+
+          {% for r in dns_graded | selectattr('status', 'eq', 'FAIL') %}
+            record        : {{ r.name }}
+            expected      : {{ r.expect | join(', ') | default('any A record', true) }}
+            resolved      : {{ r.actual | join(', ') | default('NXDOMAIN', true) }}
+            why it matters: {{ r.why }}
+          {% endfor %}
+
+          Remediation: create the record(s) above on
+          {{ dns_servers | join(', ') | default('the cluster resolvers', true) }}
+          and relaunch this workflow. No cluster resources have been touched.
+      when: dns_graded | selectattr('status', 'eq', 'FAIL') | list | length > 0

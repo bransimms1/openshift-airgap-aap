@@ -1,0 +1,242 @@
+---
+# Parse an Airgap Architect export bundle and derive everything that must be
+# true about the environment. Nothing below hardcodes a hostname or an address:
+# every expectation is derived from the exported configuration bundle.
+#
+# The bundle is unpacked on the target host (a bastion in production, the
+# execution environment in demo mode). It is therefore read with slurp rather
+# than lookup('file') — a controller-side lookup would read the EE's own
+# filesystem and silently find nothing, or worse, find a stale copy.
+#
+# This role is re-runnable and self-contained by design. On AAP running on
+# OpenShift every workflow node executes in its own pod, so a node cannot see
+# a directory another node created. Any node that needs the raw documents
+# includes this role and reconstructs them from source: the repository in demo
+# mode, the bundle URL in production. Nothing is inherited from a sibling node.
+#
+# Acquisition is skipped when the working directory is already populated. On a
+# production bastion — a real, persistent host reached over SSH — that makes
+# the second and later nodes a no-op rather than a re-download.
+
+- name: Create this run's working directory
+  ansible.builtin.file:
+    path: "{{ bundle_workdir }}"
+    state: directory
+    mode: "0750"
+
+# --- Acquire ---------------------------------------------------------------
+- name: Check whether this pod or host already has the bundle
+  ansible.builtin.stat:
+    path: "{{ bundle_workdir }}/install-config.yaml"
+  register: _already_present
+
+- name: DEMO — stage the sample bundle from the repository
+  ansible.builtin.copy:
+    src: "{{ demo_bundle_dir }}/"
+    dest: "{{ bundle_workdir }}/"
+    mode: "0640"
+  when:
+    - demo_mode | bool
+    - not _already_present.stat.exists
+
+- name: PRODUCTION — fetch the bundle
+  ansible.builtin.get_url:
+    url: "{{ bundle_url }}"
+    dest: "{{ bundle_workdir }}/bundle.zip"
+    mode: "0640"
+  when:
+    - not (demo_mode | bool)
+    - not _already_present.stat.exists
+
+- name: PRODUCTION — unpack
+  ansible.builtin.unarchive:
+    src: "{{ bundle_workdir }}/bundle.zip"
+    dest: "{{ bundle_workdir }}"
+    remote_src: true
+  when:
+    - not (demo_mode | bool)
+    - not _already_present.stat.exists
+
+# --- Digest ----------------------------------------------------------------
+# In production this is the digest of the supplied archive. In demo mode there
+# is no archive, so it is the digest of the install-config actually parsed.
+# Either way the report names exactly what was validated.
+- name: Record the digest of exactly what we validated
+  ansible.builtin.stat:
+    path: "{{ bundle_workdir }}/{{ 'install-config.yaml' if demo_mode | bool else 'bundle.zip' }}"
+    checksum_algorithm: sha256
+  register: _bundle_stat
+
+- name: Inventory what the bundle actually contains
+  ansible.builtin.find:
+    paths: "{{ bundle_workdir }}"
+    recurse: true
+    file_type: file
+  register: _bundle_files
+
+- name: Build the file list
+  ansible.builtin.set_fact:
+    bundle_contents: "{{ _bundle_files.files | map(attribute='path')
+                         | map('relpath', bundle_workdir) | list }}"
+
+# --- Gate 1: completeness -------------------------------------------------
+- name: Assert the bundle contains what an install needs
+  ansible.builtin.assert:
+    that: item in bundle_contents
+    fail_msg: >-
+      Bundle is missing {{ item }}. This export cannot be used for an
+      installation. Regenerate it from Airgap Architect.
+    success_msg: "{{ item }} present"
+  loop: "{{ bundle_required_files }}"
+
+# --- Gate 2: the draft marker --------------------------------------------
+# Airgap Architect writes DRAFT_NOT_VALIDATED.txt when warnings were present at
+# export time. That is a machine-readable statement that a human was told the
+# config was not clean and exported anyway. It should not silently become an
+# install in a governed environment.
+- name: Detect the draft marker
+  ansible.builtin.set_fact:
+    bundle_is_draft: "{{ bundle_draft_marker in bundle_contents }}"
+
+- name: Refuse to proceed on a draft export
+  ansible.builtin.fail:
+    msg: >-
+      {{ bundle_draft_marker }} is present in this bundle. The export had
+      unresolved warnings. Resolve them in Airgap Architect and re-export,
+      or record an explicit exception and set bundle_fail_on_draft=false.
+  when:
+    - bundle_is_draft | bool
+    - bundle_fail_on_draft | bool
+
+# --- Parse ----------------------------------------------------------------
+# slurp reads on the target host and returns base64. lookup('file') would read
+# wherever the play is being executed from, which is not the same machine.
+- name: Read the configuration files off the host that unpacked them
+  ansible.builtin.slurp:
+    src: "{{ bundle_workdir }}/{{ item }}"
+  register: _slurped
+  loop: "{{ bundle_parse_files }}"
+  when: item in bundle_contents
+  loop_control:
+    label: "{{ item }}"
+
+- name: Decode and parse
+  ansible.builtin.set_fact:
+    _bundle_yaml: >-
+      {{ _bundle_yaml | default({})
+         | combine({ item.item: (item.content | b64decode | from_yaml) }) }}
+  loop: "{{ _slurped.results | selectattr('content', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Bind the parsed documents
+  ansible.builtin.set_fact:
+    ic: "{{ _bundle_yaml['install-config.yaml'] }}"
+    isc: "{{ _bundle_yaml['imageset-config.yaml'] }}"
+
+- name: Bind agent-config when present (agent-based scenarios only)
+  ansible.builtin.set_fact:
+    ac: "{{ _bundle_yaml['agent-config.yaml'] }}"
+  when: "'agent-config.yaml' in _bundle_yaml"
+
+- name: Assert the imageset is oc-mirror v2 format
+  ansible.builtin.assert:
+    that: isc.apiVersion is search('v2alpha1')
+    fail_msg: >-
+      imageset-config.yaml is {{ isc.apiVersion }}, not an oc-mirror v2
+      ImageSetConfiguration. v1 emits ImageContentSourcePolicy rather than
+      IDMS/ITMS and the downstream cluster resource tasks will not apply.
+
+# --- Derive ---------------------------------------------------------------
+- name: Derive the facts every downstream check depends on
+  ansible.builtin.set_fact:
+    cluster_name: "{{ ic.metadata.name }}"
+    base_domain: "{{ ic.baseDomain }}"
+    cluster_fqdn: "{{ ic.metadata.name }}.{{ ic.baseDomain }}"
+    api_vips: "{{ ic.platform.baremetal.apiVIPs | default([]) }}"
+    ingress_vips: "{{ ic.platform.baremetal.ingressVIPs | default([]) }}"
+    machine_networks: "{{ ic.networking.machineNetwork | map(attribute='cidr') | list }}"
+    ntp_sources: "{{ (ac.additionalNTPSources | default([])) if ac is defined else [] }}"
+    rendezvous_ip: "{{ ac.rendezvousIP | default(omit) if ac is defined else omit }}"
+    trust_bundle: "{{ ic.additionalTrustBundle | default('') }}"
+    mirror_hosts: >-
+      {{ (ic.imageDigestSources | default(ic.imageContentSources | default([])))
+         | map(attribute='mirrors') | flatten | map('split', '/') | map('first')
+         | unique | list }}
+    ocp_release: "{{ isc.mirror.platform.channels[0].minVersion | default('unknown') }}"
+
+- name: Derive the DNS records that MUST exist
+  ansible.builtin.set_fact:
+    expected_dns: >-
+      {{ [
+        {'name': 'api.'     ~ cluster_fqdn, 'expect': api_vips,     'why': 'external API endpoint'},
+        {'name': 'api-int.' ~ cluster_fqdn, 'expect': api_vips,     'why': 'control plane and machine-config server; most commonly missed'},
+        {'name': 'test.apps.' ~ cluster_fqdn, 'expect': ingress_vips, 'why': 'wildcard *.apps must resolve to the ingress VIP'}
+      ] }}
+
+# One record per declared host. Built with an explicit loop and plain
+# concatenation to avoid backreference-dependent substitution behaviour.
+- name: Add the record each declared host must have
+  ansible.builtin.set_fact:
+    expected_dns: >-
+      {{ expected_dns + [{
+           'name': item.hostname ~ '.' ~ cluster_fqdn,
+           'expect': [],
+           'why': 'node record must resolve'
+         }] }}
+  loop: "{{ ac.hosts | default([]) }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: ac is defined
+
+# Plain Jinja rather than json_query: one less runtime dependency (jmespath) to
+# have present in the execution environment for a check this simple.
+- name: Derive the host MACs that DHCP reservations must match
+  ansible.builtin.set_fact:
+    expected_macs: >-
+      {{ expected_macs | default([]) + [{
+           'host': item.hostname,
+           'macs': item.interfaces | default([]) | map(attribute='macAddress') | list
+         }] }}
+  loop: "{{ ac.hosts | default([]) }}"
+  loop_control:
+    label: "{{ item.hostname }}"
+  when: ac is defined
+
+# --- Publish to the workflow ---------------------------------------------
+# set_stats promotes these into every downstream workflow node, so six
+# validation jobs share one parse instead of disagreeing about defaults.
+- name: Publish bundle facts to the workflow
+  ansible.builtin.set_stats:
+    data:
+      bundle_sha256: "{{ _bundle_stat.stat.checksum }}"
+      bundle_is_draft: "{{ bundle_is_draft }}"
+      bundle_workdir: "{{ bundle_workdir }}"
+      demo_mode: "{{ demo_mode | bool }}"
+      demo_scenario: "{{ demo_scenario | default('passing') }}"
+      cluster_name: "{{ cluster_name }}"
+      cluster_fqdn: "{{ cluster_fqdn }}"
+      base_domain: "{{ base_domain }}"
+      api_vips: "{{ api_vips }}"
+      ingress_vips: "{{ ingress_vips }}"
+      machine_networks: "{{ machine_networks }}"
+      ntp_sources: "{{ ntp_sources }}"
+      mirror_hosts: "{{ mirror_hosts }}"
+      ocp_release: "{{ ocp_release }}"
+      expected_dns: "{{ expected_dns }}"
+      expected_macs: "{{ expected_macs | default([]) }}"
+
+- name: Show the derived expectation set
+  ansible.builtin.debug:
+    msg: |
+      {{ '*** DEMO MODE - sample bundle from the repository ***' if demo_mode | bool else '' }}
+      Derived from {{ 'install-config' if demo_mode | bool else 'bundle' }} {{ _bundle_stat.stat.checksum[:12] }}
+        working dir   : {{ bundle_workdir }}
+        cluster       : {{ cluster_fqdn }}
+        release       : {{ ocp_release }}
+        api VIP(s)    : {{ api_vips | join(', ') }}
+        ingress VIP(s): {{ ingress_vips | join(', ') }}
+        machine net   : {{ machine_networks | join(', ') }}
+        NTP           : {{ ntp_sources | join(', ') | default('none set', true) }}
+        mirror        : {{ mirror_hosts | join(', ') }}
+      Derived {{ expected_dns | length }} DNS assertions from the bundle.

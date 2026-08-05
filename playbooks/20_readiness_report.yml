@@ -1,0 +1,8 @@
+---
+# Runs on BOTH the success and failure paths. A failed run still produces
+# evidence - that is the point.
+- name: Produce the readiness report
+  hosts: bastion
+  gather_facts: true
+  roles:
+    - role: readiness_report

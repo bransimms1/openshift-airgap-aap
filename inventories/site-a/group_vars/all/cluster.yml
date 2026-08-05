@@ -1,0 +1,26 @@
+---
+# Site-level facts that are NOT derivable from the bundle.
+# Everything the bundle already knows is derived at run time - see
+# roles/airgap_bundle_facts. Do not duplicate it here; duplication is how
+# the automation and the config drift apart.
+
+site_id: site-a
+
+# Where the bundle is fetched from. Overridden by the survey at launch.
+bundle_url: "https://artifacts.example.com/airgap/ocp-site-a/latest.zip"
+
+# Resolvers to query. Must be the resolvers the cluster will use.
+dns_servers:
+  - 10.42.10.53
+
+# Approved hardware baseline. This is the manifest a firmware drift report
+# compares against - it is policy, not configuration.
+firmware_baseline:
+  bios_version: "2.15.1"
+  idrac_version: "7.10.30.00"
+  nic_version: "22.31.13.70"
+
+# Bastion sizing thresholds for the readiness check.
+bastion_min_free_gb: 200
+
+# Demo/lab overrides live in inventories/lab/ - keep them out of site inventories.

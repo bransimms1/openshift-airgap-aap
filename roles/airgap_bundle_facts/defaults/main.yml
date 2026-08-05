@@ -1,0 +1,35 @@
+---
+# Demo mode is off unless an inventory or the survey turns it on.
+# See inventories/demo/group_vars/all/demo.yml.
+demo_mode: false
+demo_scenario: passing
+demo_bundle_dir: "{{ role_path }}/../../demo/bundle"
+
+# One working directory per workflow run.
+#
+# Every node of a workflow job shares awx_workflow_job_id, so intake and the
+# six validation branches agree on the path without passing it around, and two
+# concurrent runs cannot land in the same directory. The intake node also
+# publishes the resolved path through set_stats, so downstream nodes use the
+# exact directory that was written rather than re-deriving it.
+#
+# Nothing here is deleted at the start of a run. Wiping a shared directory is
+# how concurrent runs corrupt each other.
+bundle_workdir_base: /tmp/airgap-readiness
+bundle_run_id: "{{ awx_workflow_job_id | default(awx_job_id | default('local', true), true) }}"
+bundle_workdir: "{{ bundle_workdir_base }}/run-{{ bundle_run_id }}"
+
+bundle_required_files:
+  - install-config.yaml
+  - imageset-config.yaml
+
+# Read and parsed when present. agent-config.yaml is optional: it exists for
+# agent-based installs and not for other platforms.
+bundle_parse_files:
+  - install-config.yaml
+  - agent-config.yaml
+  - imageset-config.yaml
+
+bundle_draft_marker: DRAFT_NOT_VALIDATED.txt
+# Set false only if you have an explicit, recorded exception.
+bundle_fail_on_draft: true

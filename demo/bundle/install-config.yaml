@@ -1,0 +1,58 @@
+---
+# DEMO FIXTURE — a representative Airgap Architect export.
+# This is not a real site. It exists so the readiness workflow can be
+# demonstrated without an external bundle URL, a bastion, or hardware.
+#
+# Values are chosen so that every semantic check in 01_validate_bundle.yml
+# genuinely passes — that is the scope of what this fixture demonstrates: VIPs sit inside machineNetwork, api and ingress differ,
+# cluster/service networks do not overlap machineNetwork, and a trust bundle
+# is present.
+apiVersion: v1
+metadata:
+  name: ocp-demo
+baseDomain: lab.example.com
+
+controlPlane:
+  name: master
+  replicas: 3
+compute:
+  - name: worker
+    replicas: 0
+
+networking:
+  networkType: OVNKubernetes
+  machineNetwork:
+    - cidr: 10.42.10.0/24
+  clusterNetwork:
+    - cidr: 10.128.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - 172.30.0.0/16
+
+platform:
+  baremetal:
+    apiVIPs:
+      - 10.42.10.5
+    ingressVIPs:
+      - 10.42.10.6
+
+imageDigestSources:
+  - source: quay.io/openshift-release-dev/ocp-release
+    mirrors:
+      - registry.lab.example.com:8443/openshift/release-images
+  - source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
+    mirrors:
+      - registry.lab.example.com:8443/openshift/release
+
+# Non-empty, and deliberately not certificate-shaped. 01_validate_bundle
+# asserts only that a trust bundle is declared - a disconnected install that
+# does not declare the mirror's CA fails every image pull with x509 errors.
+# A real export carries a PEM chain here; committing anything PEM-shaped to a
+# public repository teaches a scanner-evading reader the shape of the real
+# thing, so this fixture carries a sentinel instead.
+additionalTrustBundle: |
+  DEMO_NONEMPTY_TRUST_BUNDLE
+
+# pullSecret and sshKey are absent on purpose. A real export carries both;
+# nothing in the readiness workflow reads either, so the fixture omits them
+# rather than committing empty credential-shaped keys.

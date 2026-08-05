@@ -1,0 +1,121 @@
+---
+# Validate registry reachability, certificate trust, and release content.
+# Reachability alone is not sufficient: the chain the registry presents must
+# match the CA the cluster was configured to trust, as seen from this subnet.
+- name: Validate mirror registry reachability, trust and content
+  hosts: validators
+  gather_facts: false
+  vars:
+    registry_port: 8443
+    # This node's own scratch space. It does not read anything the intake node
+    # wrote: trust_bundle arrives as a workflow artifact and is written out
+    # here, in this pod, immediately before it is used.
+    registry_workdir: "/tmp/registry-check-{{ awx_job_id | default('local', true) }}"
+  tasks:
+
+    # There is no mirror registry in demo mode. Dialling out to a hostname that
+    # does not resolve would hang the branch and take the demo with it.
+    - name: DEMO - record the branch as simulated
+      when: demo_mode | default(false) | bool
+      block:
+        - name: Publish simulated result
+          ansible.builtin.set_stats:
+            data:
+              check_registry:
+                status: SIMULATED
+                hosts: "{{ mirror_hosts | default([]) }}"
+                detail: >-
+                  Demo mode. In production this fetches /v2/ over TLS validated
+                  by the bundle's own additionalTrustBundle, reads the
+                  certificate the registry actually presents, and confirms the
+                  release payload for this version exists in the mirror.
+        - name: End the play
+          ansible.builtin.meta: end_play
+
+    - name: Create this job's scratch directory
+      ansible.builtin.file:
+        path: "{{ registry_workdir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Write the bundle's additionalTrustBundle to disk
+      ansible.builtin.copy:
+        content: "{{ trust_bundle }}"
+        dest: "{{ registry_workdir }}/trust-bundle.pem"
+        mode: "0644"
+
+    - name: Registry /v2/ API must respond over TLS validated by that bundle
+      ansible.builtin.uri:
+        url: "https://{{ item }}/v2/"
+        ca_path: "{{ registry_workdir }}/trust-bundle.pem"
+        validate_certs: true
+        status_code: [200, 401]   # 401 is fine - it means TLS and routing work
+      loop: "{{ mirror_hosts }}"
+      register: _reg
+      failed_when: false
+
+    - name: Read the certificate the registry actually presents
+      community.crypto.get_certificate:
+        host: "{{ mirror_hosts[0] | split(':') | first }}"
+        port: "{{ registry_port }}"
+      register: _cert
+      failed_when: false
+
+    # 404 on the tags/list endpoint means the release repository is not in the
+    # mirror. The install would proceed as far as pulling the payload and then
+    # stop, so it is treated as a failure.
+    - name: Confirm the release payload for this version exists in the mirror
+      ansible.builtin.uri:
+        url: "https://{{ mirror_hosts[0] }}/v2/openshift/release-images/tags/list"
+        ca_path: "{{ registry_workdir }}/trust-bundle.pem"
+        status_code: [200, 401]
+      register: _payload
+      failed_when: false
+
+    # One boolean per validated property, derived before publication so the
+    # published result and the failure condition cannot disagree.
+    - name: Derive the three verdicts this play claims to produce
+      ansible.builtin.set_fact:
+        _unreachable_hosts: "{{ _reg.results | rejectattr('status', 'in', [200, 401]) | map(attribute='item') | list }}"
+        # get_certificate runs with failed_when: false so its result reaches
+        # set_stats. An absent not_after is the only reliable sign it did not
+        # come back with a certificate.
+        _cert_ok: "{{ _cert.not_after is defined and _cert.not_after | length > 0 }}"
+        # 401 means the endpoint exists and TLS and routing work, but the tag
+        # list is not enumerable without credentials - existence is not confirmed
+        # and not disproved. Treated as "could not confirm" rather than FAIL, so
+        # an authenticated mirror does not fail readiness for being authenticated.
+        _payload_ok: "{{ _payload.status | default(0) in [200, 401] }}"
+
+    - name: Publish result
+      ansible.builtin.set_stats:
+        data:
+          check_registry:
+            status: "{{ 'PASS' if (_unreachable_hosts | length == 0 and _cert_ok and _payload_ok) else 'FAIL' }}"
+            hosts: "{{ mirror_hosts }}"
+            unreachable: "{{ _unreachable_hosts }}"
+            cert_expires: "{{ _cert.not_after | default('unknown') }}"
+            cert_retrieved: "{{ _cert_ok }}"
+            release_probe: "{{ _payload.status | default('n/a') }}"
+            release_payload_present: "{{ _payload.status | default(0) == 200 }}"
+
+    - name: Assert reachability, trust and content together
+      ansible.builtin.fail:
+        msg: >-
+          {% if _unreachable_hosts | length > 0 %}
+          {{ _unreachable_hosts | join(', ') }} did not answer on /v2/.
+          If this is a certificate error, the CA in additionalTrustBundle does
+          not match what the registry is presenting - the cluster will fail
+          every image pull with x509 errors after install.
+          {% endif %}
+          {% if not _cert_ok %}
+          No certificate could be read from {{ mirror_hosts[0] | split(':') | first }}:{{ registry_port }}.
+          The trust chain cannot be verified, so nothing here proves the cluster
+          will accept what the registry presents.
+          {% endif %}
+          {% if not _payload_ok %}
+          The release payload probe returned {{ _payload.status | default('no response') }}.
+          The release repository is not in the mirror - oc-mirror did not publish
+          it, or it was published under a different path.
+          {% endif %}
+      when: _unreachable_hosts | length > 0 or not _cert_ok or not _payload_ok

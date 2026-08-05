@@ -1,0 +1,74 @@
+---
+- name: Validate bastion readiness
+  hosts: bastion
+  gather_facts: true
+  tasks:
+
+    # The disk check is real in demo mode - it runs against whatever filesystem
+    # the execution environment has, with a low threshold from the demo
+    # inventory. The client-tool check is simulated: the sample bundle carries
+    # no tools/ directory because it carries no binaries.
+    # ansible_mounts is a Linux fact. If it is unavailable the branch reports
+    # SKIPPED rather than inventing a measurement or crashing the run.
+    - name: Measure free space on /
+      ansible.builtin.set_fact:
+        _root_mount: "{{ ansible_mounts | default([]) | selectattr('mount', 'eq', '/') | list }}"
+
+    - name: Convert to GB
+      ansible.builtin.set_fact:
+        _free_gb: >-
+          {{ ((_root_mount | map(attribute='size_available') | first | default(0))
+              / 1073741824) | round(1) }}
+        _measured: "{{ _root_mount | length > 0 }}"
+
+    - name: Check client tool versions against the target release
+      ansible.builtin.command: "{{ item }} version --client"
+      loop:
+        - "{{ bundle_workdir }}/tools/oc"
+        - "{{ bundle_workdir }}/tools/openshift-install"
+      register: _tools
+      changed_when: false
+      failed_when: false
+      when: not (demo_mode | default(false) | bool)
+
+    - name: Publish result
+      ansible.builtin.set_stats:
+        data:
+          check_bastion:
+            status: >-
+              {{ 'SKIPPED' if not (_measured | bool)
+                 else ('FAIL' if (_free_gb | float) <= (bastion_min_free_gb | float)
+                 else ('SIMULATED' if demo_mode | default(false) | bool else 'PASS')) }}
+            free_gb: "{{ _free_gb }}"
+            min_required_gb: "{{ bastion_min_free_gb }}"
+            tools: "{{ _tools.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | list }}"
+            detail: >-
+              {{ 'Demo mode: free space measured for real against the execution
+              environment; client tool versions not checked because the sample
+              bundle carries no binaries.'
+              if demo_mode | default(false) | bool
+              else 'Free space and client tool versions checked on the bastion.' }}
+
+    - name: Enough space for the ISO and mirror output
+      ansible.builtin.fail:
+        msg: >-
+          Only {{ _free_gb }}GB free, less than the {{ bastion_min_free_gb }}GB
+          required. An agent ISO plus a mirrored release payload will not fit,
+          and oc-mirror fails messily when it runs out of space mid-transfer.
+      when:
+        - _measured | bool
+        - (_free_gb | float) <= (bastion_min_free_gb | float)
+
+    # A release mismatch between the bundled installer and the target payload is
+    # a finding for the report, not a reason to stop a read-only readiness run.
+    # failed_when cannot express "record this and carry on".
+    - name: Assert the installer matches the release being deployed  # noqa: ignore-errors
+      ansible.builtin.assert:
+        that: ocp_release in (_tools.results[1].stdout | default(''))
+        fail_msg: >-
+          openshift-install in the bundle does not report {{ ocp_release }}.
+          A mismatched installer produces an ISO for a different payload.
+      ignore_errors: true    # report, don't block
+      when:
+        - not (demo_mode | default(false) | bool)
+        - _tools.results | default([]) | length > 1

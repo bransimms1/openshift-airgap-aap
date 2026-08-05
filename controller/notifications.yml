@@ -1,0 +1,23 @@
+---
+- name: Define notifications
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - ansible.controller.notification_template:
+        name: "site-readiness-webhook"
+        organization: "Platform Engineering"
+        notification_type: webhook
+        notification_configuration:
+          url: "https://chat.example.com/hooks/platform-eng"
+          http_method: POST
+          headers: { Content-Type: "application/json" }
+        controller_host: "{{ controller_hostname }}"
+        controller_oauthtoken: "{{ controller_token }}"
+
+    - ansible.controller.workflow_job_template:
+        name: "openshift-site-readiness"
+        notification_templates_error: ["site-readiness-webhook"]
+        notification_templates_approvals: ["site-readiness-webhook"]
+        controller_host: "{{ controller_hostname }}"
+        controller_oauthtoken: "{{ controller_token }}"

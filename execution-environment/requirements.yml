@@ -1,0 +1,37 @@
+---
+# Collections the EXECUTION ENVIRONMENT needs — that is, collections referenced
+# by something under playbooks/ or roles/. Pinned deliberately. In a
+# disconnected environment these resolve from Private Automation Hub, not
+# galaxy.ansible.com. Pin, sync, sign, verify.
+collections:
+  - name: ansible.utils
+    version: ">=5.1.2"
+  - name: ansible.posix
+    version: ">=1.6.0"
+  - name: community.general      # redfish_info, redfish_command, dig lookup
+    version: ">=9.0.0"
+  - name: community.crypto       # get_certificate, x509_certificate_info
+    version: ">=2.20.0"
+  - name: kubernetes.core        # Day 2
+    version: ">=5.0.0"
+
+# Deliberately NOT here:
+#
+#   ansible.controller  applies controller/*.yml from an operator's machine or
+#                       a pipeline. It is never called by a playbook that runs
+#                       inside this EE.
+#   redhat.openshift    not referenced by anything under playbooks/ or roles/.
+#   dellemc.openmanage  its bindep pulls isomd5sum, syslinux and xorriso, none
+#                       of which exist in UBI9-minimal's repositories, and
+#                       microdnf cannot skip an unavailable package. The one
+#                       task that uses it now lives in
+#                       playbooks/tasks/bmc_dell_bios.yml and is pulled in with
+#                       include_tasks, which resolves at runtime - so the
+#                       playbook parses without the collection and still uses
+#                       the certified module on any EE that carries it. Add it
+#                       back when building on a fuller base.
+#
+# Both are Automation Hub-only certified content, so including them makes the
+# EE build require Hub credentials for collections the EE never loads. They
+# remain pinned in collections/requirements.yml, which is the list for whoever
+# applies the controller-as-code.

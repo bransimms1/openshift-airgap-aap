@@ -1,0 +1,32 @@
+---
+# Demo-mode defaults. Production behaviour lives in inventories/site-a/ and is
+# not affected by anything in this file.
+
+# The master switch. Every playbook checks this before touching anything real.
+demo_mode: true
+
+site_id: demo
+
+# Which fixture zone the DNS check resolves against.
+# Overridden by the survey: failing_dns | passing
+demo_scenario: failing_dns
+
+# How the BMC branch reports itself when there is no Redfish endpoint.
+# simulated | skipped — overridden by the survey.
+demo_bmc_mode: simulated
+
+# Not used in demo mode — the sample bundle is read from demo/bundle/.
+# Present so a mis-set demo_mode fails loudly rather than reaching the network.
+bundle_url: "unset-in-demo-mode"
+
+# Kept so the production code path is exercised unchanged; the fixture zone
+# is consulted instead of these resolvers.
+dns_servers:
+  - 10.42.10.53
+
+bastion_min_free_gb: 1
+
+firmware_baseline:
+  bios_version: "2.15.1"
+  idrac_version: "7.10.30.00"
+  nic_version: "22.31.13.70"

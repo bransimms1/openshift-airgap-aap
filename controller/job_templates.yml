@@ -1,0 +1,109 @@
+---
+# Controller-as-code. Nobody clicks around the UI to add a site; the platform's
+# own configuration is diffable in a pull request and restoring it is a
+# pipeline run rather than a memory test.
+#
+# Two knobs, both set at apply time:
+#
+#   controller_demo_setup: true   defines the templates against the demo
+#                                 inventory and attaches no credentials, so a
+#                                 laptop or a fresh AAP can run the readiness
+#                                 demo with no bastion, registry or BMC secrets
+#                                 in existence yet.
+#
+#   controller_demo_setup: false  production. Credentials are attached and the
+#                                 default inventory is site-a.
+#
+# ask_inventory_on_launch is true either way: the workflow supplies the
+# inventory, so one set of job templates serves both the demo and a real site.
+# APPLYING THIS ON AAP 2.5+ / 2.6
+#
+# The legacy /api/v2/ endpoint is gone in the platform gateway, so awx.awx
+# cannot drive a 2.6 controller - it 404s. Use ansible.controller, which is
+# certified content and already present in the ee-supported execution
+# environment that ships with AAP.
+#
+# The reliable way to apply this is from inside AAP itself:
+#   1. Create a credential of type "Red Hat Ansible Automation Platform"
+#      pointing at this same controller.
+#   2. Create ONE job template by hand - playbook controller/job_templates.yml,
+#      EE ee-supported, that credential attached.
+#   3. Run it. It creates everything else, including the workflow.
+#
+# controller_host and controller_oauthtoken are optional below: with that
+# credential attached, ansible.controller reads them from the environment and
+# no token is passed as an extra var.
+- name: Define job templates
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    controller_demo_setup: true
+    # Names of objects that must already exist in Automation Controller.
+    # Override at apply time to match your instance, e.g.
+    #   -e controller_organization=Default
+    controller_organization: "Platform Engineering"
+    controller_project: "openshift-airgap-aap"
+    controller_inventory_demo: "demo"
+    controller_inventory_prod: "site-a"
+    # Always explicit, in both modes. The demo needs an EE that carries
+    # community.crypto and dellemc.openmanage even though those branches skip:
+    # Ansible resolves module names at parse time, before when: is evaluated,
+    # so a default EE without them fails to parse the job. Override this if
+    # your image is named something else.
+    controller_execution_environment: "ee-airgap-readiness"
+    common: &common
+      organization: "{{ controller_organization }}"
+      project: "{{ controller_project }}"
+      inventory: "{{ controller_inventory_demo if controller_demo_setup | bool else controller_inventory_prod }}"
+      execution_environment: "{{ controller_execution_environment }}"
+      ask_variables_on_launch: false     # surveys, not arbitrary extra vars
+      ask_inventory_on_launch: true      # the workflow decides demo vs site
+      controller_host: "{{ controller_hostname | default(omit) }}"
+      controller_oauthtoken: "{{ controller_token | default(omit) }}"
+  tasks:
+
+    - name: Intake and bundle validation
+      ansible.controller.job_template:
+        <<: *common
+        name: "{{ item.name }}"
+        playbook: "{{ item.playbook }}"
+        credentials: "{{ omit if controller_demo_setup | bool else item.credentials }}"
+      loop:
+        - { name: "00-bundle-intake",   playbook: "playbooks/00_bundle_intake.yml",   credentials: ["bastion-ssh"] }
+        - { name: "01-validate-bundle", playbook: "playbooks/01_validate_bundle.yml", credentials: ["bastion-ssh"] }
+
+    - name: Parallel readiness branches
+      ansible.controller.job_template:
+        <<: *common
+        name: "{{ item.name }}"
+        playbook: "{{ item.playbook }}"
+        credentials: "{{ omit if controller_demo_setup | bool else item.credentials }}"
+      loop:
+        - { name: "10-validate-dns",      playbook: "playbooks/10_validate_dns.yml",         credentials: ["bastion-ssh"] }
+        - { name: "11-validate-ntp",      playbook: "playbooks/11_validate_ntp.yml",         credentials: ["bastion-ssh"] }
+        - { name: "12-validate-registry", playbook: "playbooks/12_validate_registry.yml",    credentials: ["bastion-ssh", "mirror-registry"] }
+        - { name: "13-validate-vips",     playbook: "playbooks/13_validate_vips.yml",        credentials: ["bastion-ssh"] }
+        - { name: "14-validate-bastion",  playbook: "playbooks/14_validate_bastion.yml",     credentials: ["bastion-ssh"] }
+        - { name: "15-validate-bmc",      playbook: "playbooks/15_validate_bmc_redfish.yml", credentials: ["demo-bmc"] }
+
+    - name: Evidence
+      ansible.controller.job_template:
+        <<: *common
+        name: "20-readiness-report"
+        playbook: "playbooks/20_readiness_report.yml"
+        credentials: "{{ omit if controller_demo_setup | bool else ['bastion-ssh'] }}"
+
+    # Defined so the workflow graph is complete and the approval gate visibly
+    # guards something. Both playbooks refuse to act when demo_mode is true,
+    # so approving during a demo is safe.
+    - name: Execution, behind the gate
+      ansible.controller.job_template:
+        <<: *common
+        name: "{{ item.name }}"
+        playbook: "{{ item.playbook }}"
+        credentials: "{{ omit if controller_demo_setup | bool else item.credentials }}"
+        job_type: run
+      loop:
+        - { name: "31-generate-agent-iso", playbook: "playbooks/31_generate_agent_iso.yml", credentials: ["bastion-ssh", "ocp-pull-secret"] }
+        - { name: "32-boot-virtual-media", playbook: "playbooks/32_boot_virtual_media.yml", credentials: ["demo-bmc"] }

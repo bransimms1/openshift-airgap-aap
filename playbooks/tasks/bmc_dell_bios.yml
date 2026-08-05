@@ -1,0 +1,25 @@
+---
+# Dell-specific BIOS assertion, in its own file on purpose.
+#
+# include_tasks resolves at RUNTIME. A module referenced directly in a playbook
+# is resolved at PARSE time, which means the whole job fails if the collection
+# is absent - even when the task would have been skipped. Keeping this here
+# lets the readiness workflow parse and run in an execution environment that
+# does not carry dellemc.openmanage, while still using the certified module
+# wherever it is available.
+#
+# Reached only when bmc_vendor == 'dell'.
+- name: Assert BIOS attributes on Dell hardware
+  dellemc.openmanage.idrac_bios:
+    idrac_ip: "{{ bmc_address }}"
+    idrac_user: "{{ bmc_username }}"
+    idrac_password: "{{ bmc_password }}"
+    validate_certs: "{{ bmc_validate_certs }}"
+    attributes:
+      BootMode: Uefi
+      SysProfile: PerfOptimized
+      ProcVirtualization: Enabled
+  check_mode: true       # readiness assessment: report drift, change nothing
+  register: _bios
+  failed_when: false
+  no_log: true
