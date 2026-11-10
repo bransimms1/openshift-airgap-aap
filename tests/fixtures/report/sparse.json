@@ -1,0 +1,10 @@
+{
+  "check_dns": {"status": "PASS"},
+  "check_registry": {
+    "cert_expires": "unknown",
+    "hosts": ["registry.site-b.example.internal"],
+    "release_payload": "UNCONFIRMED",
+    "status": "UNCONFIRMED"
+  },
+  "demo_mode": false
+}

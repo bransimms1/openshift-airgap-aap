@@ -14,3 +14,10 @@ report_workdir: "/tmp/readiness-report-{{ awx_job_id | default('local', true) }}
 # approval then means "a human approved the evidence", not "the validation
 # jobs finished".
 report_fail_when_not_ready: true
+
+# Upper bound, in bytes, on the compressed and base64-encoded dashboard
+# published as the readiness_report_html artifact. A demo report is about
+# 10 KB. The limit keeps it far below the 700000-byte task-result limit that
+# Controller passes to ansible-runner (MAX_EVENT_RES), and artifacts are handed
+# to every later workflow node as extra variables.
+report_html_artifact_max_bytes: 262144

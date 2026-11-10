@@ -1,133 +1,523 @@
+{#-
+  Readiness dashboard. Renders the `report` result set assembled in
+  tasks/main.yml; it grades nothing itself.
+
+  Self-contained by design: one inline stylesheet, no JavaScript, no external
+  fonts or images, so it opens offline from a file saved out of AAP.
+
+  Every value from the report is escaped with `| e`. Ansible does not honour
+  Jinja's autoescape, so the filter is explicit, and
+  tests/test_readiness_report.py fails on any output expression without it.
+  The macros below return markup built from escaped values, and are the only
+  other expressions allowed.
+-#}
+{%- set order = ['dns', 'ntp', 'registry', 'vips', 'bastion', 'bmc'] -%}
+{%- set names = (order | select('in', report.checks) | list) + (report.checks.keys() | reject('in', order) | list) -%}
+{%- set meta = {
+  'dns':      {'title': 'DNS',             'purpose': 'Every record the cluster needs resolves to the address the bundle expects'},
+  'ntp':      {'title': 'NTP',             'purpose': 'Declared time sources answer from the install subnet'},
+  'registry': {'title': 'Mirror registry', 'purpose': 'Reachable, trusted by the bundle CA, and holding the release payload'},
+  'vips':     {'title': 'VIPs',            'purpose': 'API and ingress VIPs are unused before installation'},
+  'bastion':  {'title': 'Bastion',         'purpose': 'Room for the agent ISO and mirror output'},
+  'bmc':      {'title': 'BMC / Redfish',   'purpose': 'Out-of-band management answers over Redfish'},
+} -%}
+{%- set tone = {'PASS': 'ok', 'FAIL': 'bad', 'UNCONFIRMED': 'warn', 'SIMULATED': 'warn', 'SKIPPED': 'off'} -%}
+{%- set labels = {
+  'mode': 'Resolved against', 'resolvers': 'Resolvers', 'failed_records': 'Failed records',
+  'sources': 'Declared sources', 'unreachable': 'Did not answer',
+  'hosts': 'Hosts', 'cert_host': 'Certificate read from', 'cert_expires': 'Certificate expires',
+  'release_payload': 'Release payload',
+  'probed': 'Probed (must be silent)', 'answering': 'Already answering',
+  'free_gb': 'Free space', 'min_required_gb': 'Required',
+  'host': 'Host', 'power': 'Power state', 'reachable': 'Answered over Redfish',
+  'bios_config_drift': 'BIOS attribute drift', 'bios_version_installed': 'BIOS installed',
+  'bios_version_expected': 'BIOS approved',
+} -%}
+{%- set demo = report.demo_mode | default(false) | bool -%}
+{%- set verdict = report.overall | default('UNKNOWN') | string -%}
+{%- set vtone = {'READY': 'ok', 'READY_WITH_LIMITATIONS': 'warn', 'NOT_READY': 'bad'}[verdict] | default('off') -%}
+
+{#- --- helpers -------------------------------------------------------- -#}
+{%- macro st(c) -%}{{ (c.status | default('UNKNOWN') | string | upper) | e }}{%- endmacro -%}
+{%- macro tn(c) -%}{{ tone[c.status | default('UNKNOWN') | string | upper] | default('off') | e }}{%- endmacro -%}
+{%- macro pill(c) -%}<span class="pill t-{{ tn(c) }}">{{ st(c) }}</span>{%- endmacro -%}
+{#- Where a result came from. A status is only as good as what was contacted. -#}
+{%- macro source(c) -%}
+{%- set s = c.status | default('UNKNOWN') | string | upper -%}
+{%- if s == 'SIMULATED' -%}<span class="src src-sim">Simulated &middot; nothing contacted</span>
+{%- elif s == 'SKIPPED' -%}<span class="src src-off">Not run</span>
+{%- elif c.mode | default('') == 'fixture' -%}<span class="src src-fix">Graded against fixture data</span>
+{%- elif s in ['PASS', 'FAIL', 'UNCONFIRMED'] -%}<span class="src src-live">{{ 'Executed in demo pod' if demo else 'Executed against live environment' }}</span>
+{%- else -%}<span class="src src-off">Unrecognised status</span>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro items(v, empty='none') -%}
+{%- if v is string or v is number -%}<code>{{ v | string | e }}</code>
+{%- elif v is mapping -%}<code>{{ v | to_json | e }}</code>
+{%- elif v is iterable and v | length > 0 -%}{% for i in v %}<code>{{ i | string | e }}</code>{{ ' ' if not loop.last }}{% endfor %}
+{%- else -%}<span class="none">{{ empty | e }}</span>
+{%- endif -%}
+{%- endmacro -%}
+{%- macro value(name, k, c) -%}
+{%- set v = c[k] -%}
+{%- if k == 'free_gb' and (c.status | default('') == 'SKIPPED') -%}<span class="none">not measured</span>
+{%- elif k in ['free_gb', 'min_required_gb'] -%}{{ v | string | e }} GB
+{%- elif k == 'mode' -%}{{ ({'fixture': 'fixture zone in demo/dns/ (no DNS server queried)', 'live': 'live resolvers'}[v] | default(v)) | string | e }}
+{%- elif k == 'cert_expires' -%}{{ date(v) }}
+{%- elif v is sameas true or v is sameas false -%}{{ 'yes' if v else 'no' }}
+{%- else -%}{{ items(v) }}
+{%- endif -%}
+{%- endmacro -%}
+{#- community.crypto reports ASN.1 time, 20271231235959Z. -#}
+{%- macro date(v) -%}
+{%- set s = v | string -%}
+{%- if s is match('^[0-9]{14}Z$') -%}{{ (s[0:4] ~ '-' ~ s[4:6] ~ '-' ~ s[6:8] ~ ' ' ~ s[8:10] ~ ':' ~ s[10:12] ~ ' UTC') | e }}
+{%- else -%}{{ s | e }}{%- endif -%}
+{%- endmacro -%}
+{%- macro title(name) -%}{{ (meta[name].title | default(name)) | e }}{%- endmacro -%}
+
+{#- --- tallies (counted from statuses, never inferred) ------------------- -#}
+{%- set n = namespace(pass=0, fail=0, unconfirmed=0, simulated=0, skipped=0, other=0, fixture=0) -%}
+{%- for name in names -%}
+  {%- set s = report.checks[name].status | default('UNKNOWN') | string | upper -%}
+  {%- if s == 'PASS' -%}{%- set n.pass = n.pass + 1 -%}{%- if report.checks[name].mode | default('') == 'fixture' -%}{%- set n.fixture = n.fixture + 1 -%}{%- endif -%}
+  {%- elif s == 'FAIL' -%}{%- set n.fail = n.fail + 1 -%}
+  {%- elif s == 'UNCONFIRMED' -%}{%- set n.unconfirmed = n.unconfirmed + 1 -%}
+  {%- elif s == 'SIMULATED' -%}{%- set n.simulated = n.simulated + 1 -%}
+  {%- elif s == 'SKIPPED' -%}{%- set n.skipped = n.skipped + 1 -%}
+  {%- else -%}{%- set n.other = n.other + 1 -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set failed = report.failed_checks | default([]) -%}
+{%- set limited = report.not_executed | default([]) -%}
 <!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<title>Readiness report - {{ report.cluster }}</title>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="generator" content="openshift-airgap-aap readiness_report">
+<title>{{ verdict | e }} &middot; {{ report.cluster | default('unknown') | e }} &middot; Site readiness</title>
 <style>
- body{font-family:Arial,Helvetica,sans-serif;margin:2rem;color:#151515;max-width:60rem}
- h1{font-size:1.5rem;margin-bottom:0}
- h2{font-size:1.05rem;margin-top:1.75rem}
- .meta{color:#5a5a5a;font-size:.85rem;margin-bottom:1.5rem}
- table{border-collapse:collapse;width:100%;margin-bottom:1.5rem}
- th{background:#151515;color:#fff;text-align:left;padding:.5rem;font-size:.85rem}
- td{border-bottom:1px solid #ddd;padding:.5rem;font-size:.85rem;vertical-align:top}
- code{font-family:"Courier New",monospace}
- .pass{color:#2e6b36;font-weight:bold}
- .fail{color:#ee0000;font-weight:bold}
- .simulated{color:#9a6b00;font-weight:bold}
- .skipped{color:#5a5a5a;font-weight:bold}
- .unconfirmed{color:#9a6b00;font-weight:bold}
- .not-ready{color:#ee0000;font-weight:bold}
- .ready{color:#2e6b36;font-weight:bold}
- .ready-with-limitations{color:#9a6b00;font-weight:bold}
- .banner{padding:.75rem;margin-bottom:1rem;border:1px solid}
- .banner-fail{background:#fbeded;border-color:#ebd2d2}
- .banner-pass{background:#eaf2eb;border-color:#cfe0d1}
- .banner-demo{background:#fbf2df;border-color:#e8dcc0}
-</style></head><body>
+:root{
+  --bg:#0b111c;--bg-2:#0e1624;--surface:#131d2d;--surface-2:#18243a;--line:#243349;--line-2:#2e4060;
+  --text:#e6ecf4;--muted:#9aa8bb;--faint:#6d7c92;--brand:#ee0000;
+  --ok:#4cc46a;--ok-bg:rgba(76,196,106,.12);--ok-line:rgba(76,196,106,.38);
+  --bad:#ff6159;--bad-bg:rgba(255,97,89,.12);--bad-line:rgba(255,97,89,.42);
+  --warn:#f5b52e;--warn-bg:rgba(245,181,46,.12);--warn-line:rgba(245,181,46,.40);
+  --off:#97a1b0;--off-bg:rgba(151,161,176,.10);--off-line:rgba(151,161,176,.32);
+  --info:#7cc0f5;--info-bg:rgba(124,192,245,.10);--info-line:rgba(124,192,245,.36);
+  --sans:"Red Hat Text","Red Hat Display",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --display:"Red Hat Display","Red Hat Text",system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:"Red Hat Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius:12px;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:radial-gradient(1200px 500px at 85% -10%,#15233a 0%,transparent 60%),var(--bg);color:var(--text);
+  font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+.wrap{max-width:1200px;margin:0 auto;padding:0 28px}
+code{font-family:var(--mono);font-size:.86em;background:var(--bg-2);border:1px solid var(--line);border-radius:5px;padding:.05em .4em;overflow-wrap:anywhere}
+a{color:var(--info);text-decoration:none}
+a:hover{text-decoration:underline}
+h2{font:600 1.15rem/1.3 var(--display);margin:0 0 14px;letter-spacing:.01em}
+.eyebrow{font:600 .72rem/1 var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.none{color:var(--faint);font-style:italic}
+section{margin:0 0 34px}
 
-<h1>OpenShift environment readiness</h1>
-<div class="meta">
-  <strong>{{ report.cluster }}</strong> &middot; release {{ report.release }}<br>
-  input sha256 <code>{{ report.bundle_sha256 }}</code><br>
-  generated {{ report.generated }} &middot; job {{ report.job_id }}
-  &middot; workflow {{ report.workflow_job_id }}
-  &middot; launched by {{ report.launched_by }}<br>
-  execution environment <code>{{ report.execution_environment }}</code>
-</div>
+/* top bar */
+.top{border-top:3px solid var(--brand);background:rgba(11,17,28,.85);border-bottom:1px solid var(--line)}
+.top .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-top:14px;padding-bottom:14px}
+.product{display:flex;align-items:center;gap:12px;font:600 1rem/1.2 var(--display)}
+.product small{display:block;font:400 .8rem/1.3 var(--sans);color:var(--muted)}
+.glyph{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--brand),#a30000);display:grid;place-items:center;
+  font:700 .8rem/1 var(--display);color:#fff;letter-spacing:.02em;flex:none}
+.env{display:inline-flex;align-items:center;gap:8px;font:600 .74rem/1 var(--sans);letter-spacing:.1em;text-transform:uppercase;
+  padding:8px 12px;border-radius:999px;border:1px solid}
+.env::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.env-demo{color:var(--warn);border-color:var(--warn-line);background:var(--warn-bg)}
+.env-live{color:var(--info);border-color:var(--info-line);background:var(--info-bg)}
 
-{% if report.demo_mode %}
-<div class="banner banner-demo"><strong>Demo mode.</strong>
-Scenario <code>{{ report.demo_scenario }}</code>. Bundle and DNS came from
-fixtures in the repository. Branches marked SIMULATED did not contact a real
-environment, and no installation media was generated.</div>
+/* verdict */
+.verdict{margin-top:30px;border:1px solid var(--line);border-left:5px solid var(--off);border-radius:var(--radius);
+  background:linear-gradient(120deg,var(--off-bg),transparent 55%),var(--surface);padding:28px 30px;
+  display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:28px}
+.verdict.t-ok{border-left-color:var(--ok);background:linear-gradient(120deg,var(--ok-bg),transparent 55%),var(--surface)}
+.verdict.t-warn{border-left-color:var(--warn);background:linear-gradient(120deg,var(--warn-bg),transparent 55%),var(--surface)}
+.verdict.t-bad{border-left-color:var(--bad);background:linear-gradient(120deg,var(--bad-bg),transparent 55%),var(--surface)}
+.verdict h1{font:700 2.35rem/1.08 var(--display);margin:10px 0 14px;letter-spacing:-.01em;overflow-wrap:anywhere}
+.t-ok>div>h1{color:var(--ok)} .t-warn>div>h1{color:var(--warn)} .t-bad>div>h1{color:var(--bad)}
+.verdict p{margin:0 0 10px;color:#cfd8e4;max-width:60ch}
+.verdict p:last-child{margin-bottom:0}
+.facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 22px;margin:0;align-content:start;
+  border-left:1px solid var(--line);padding-left:26px}
+.facts div{min-width:0}
+.facts dt{font:600 .7rem/1.2 var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:4px}
+.facts dd{margin:0;font-size:.92rem;overflow-wrap:anywhere}
+.facts .wide{grid-column:1/-1}
+
+/* banners */
+.banner{display:flex;gap:14px;align-items:flex-start;border:1px solid;border-radius:10px;padding:14px 18px;margin:16px 0 0;font-size:.92rem}
+.banner strong{white-space:nowrap}
+.banner-demo{border-color:var(--warn-line);background:var(--warn-bg)}
+.banner-demo strong{color:var(--warn)}
+.banner-bad{border-color:var(--bad-line);background:var(--bad-bg)}
+.banner-bad strong{color:var(--bad)}
+
+/* tallies */
+.tally{margin-top:26px}
+.counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+.count{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px;position:relative;overflow:hidden}
+.count::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--c,var(--off))}
+.count b{display:block;font:700 1.9rem/1 var(--display);color:var(--c,var(--text))}
+.count span{display:block;margin-top:6px;font-size:.8rem;color:var(--muted)}
+.count.zero b{color:var(--faint)}
+.c-ok{--c:var(--ok)} .c-bad{--c:var(--bad)} .c-warn{--c:var(--warn)} .c-off{--c:var(--off)}
+.bar{display:flex;gap:4px;height:8px;margin:16px 0 8px}
+.bar i{flex:1;border-radius:3px;background:var(--off-line)}
+.bar i.t-ok{background:var(--ok)} .bar i.t-bad{background:var(--bad)} .bar i.t-warn{background:var(--warn)}
+.note{font-size:.84rem;color:var(--muted);margin:6px 0 0}
+
+/* cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--line);border-top:3px solid var(--off-line);border-radius:var(--radius);
+  padding:18px 20px 16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.card.t-ok{border-top-color:var(--ok)} .card.t-bad{border-top-color:var(--bad)} .card.t-warn{border-top-color:var(--warn)}
+.card header{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.card h3{font:600 1.05rem/1.25 var(--display);margin:0}
+.card .purpose{font-size:.82rem;color:var(--muted);margin:4px 0 0}
+.card dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 14px;font-size:.86rem}
+.card dt{color:var(--faint)}
+.card dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.card .detail{font-size:.83rem;color:var(--muted);margin:0;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.card footer{margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:10px;padding-top:10px;border-top:1px solid var(--line);font-size:.8rem}
+.pill{display:inline-block;font:700 .72rem/1 var(--sans);letter-spacing:.08em;padding:6px 10px;border-radius:999px;border:1px solid;white-space:nowrap}
+.pill.t-ok{color:var(--ok);background:var(--ok-bg);border-color:var(--ok-line)}
+.pill.t-bad{color:var(--bad);background:var(--bad-bg);border-color:var(--bad-line)}
+.pill.t-warn{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-line)}
+.pill.t-off{color:var(--off);background:var(--off-bg);border-color:var(--off-line)}
+.src{font-size:.78rem;color:var(--muted)}
+.src::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:7px;vertical-align:middle;background:var(--off)}
+.src-live::before{background:var(--info)} .src-fix::before{background:var(--warn)} .src-sim::before{background:var(--warn);opacity:.6}
+
+/* decision */
+.decision{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:24px 26px}
+.flow{list-style:none;margin:6px 0 22px;padding:0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0}
+.flow li{position:relative;padding:0 14px 0 0}
+.flow li::after{content:"";position:absolute;top:15px;left:38px;right:6px;height:2px;background:var(--line-2)}
+.flow li:last-child::after{display:none}
+.flow .dot{position:relative;z-index:1;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;
+  font:700 .85rem/1 var(--display);border:2px solid var(--off-line);background:var(--bg-2);color:var(--off)}
+.flow .t-ok .dot{border-color:var(--ok);color:var(--ok)}
+.flow .t-bad .dot{border-color:var(--bad);color:var(--bad)}
+.flow .t-warn .dot{border-color:var(--warn);color:var(--warn)}
+.flow b{display:block;margin-top:10px;font:600 .9rem/1.3 var(--display)}
+.flow .sub{display:block;font-size:.8rem;color:var(--muted);margin-top:2px}
+.decision h3{font:600 1.25rem/1.3 var(--display);margin:0 0 6px}
+.decision p{margin:0 0 12px;color:#cfd8e4;max-width:80ch}
+.findings{list-style:none;margin:14px 0 0;padding:0;display:grid;gap:8px}
+.findings li{display:grid;grid-template-columns:240px minmax(0,1fr);gap:14px;align-items:baseline;padding:10px 14px;
+  background:var(--bg-2);border:1px solid var(--line);border-radius:8px;font-size:.88rem}
+.findings li>span:first-child{display:flex;gap:10px;align-items:center}
+.findings b{white-space:nowrap}
+.findings em{font-style:normal;color:var(--muted)}
+
+/* detail */
+details.check{background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-bottom:10px}
+details.check>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:14px;padding:14px 18px;flex-wrap:wrap}
+details.check>summary::-webkit-details-marker{display:none}
+details.check>summary::before{content:"";width:8px;height:8px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);
+  transform:rotate(-45deg);transition:transform .15s;margin-right:4px}
+details.check[open]>summary::before{transform:rotate(45deg)}
+details.check>summary h3{font:600 1rem/1.2 var(--display);margin:0;flex:1}
+details.check>summary:focus-visible{outline:2px solid var(--info);outline-offset:-2px;border-radius:10px}
+.body{padding:2px 20px 20px;border-top:1px solid var(--line)}
+.body>p{color:#cfd8e4;font-size:.9rem;max-width:90ch}
+.kv{display:grid;grid-template-columns:minmax(150px,220px) minmax(0,1fr);gap:8px 18px;margin:16px 0 0;font-size:.88rem}
+.kv dt{color:var(--faint)}
+.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.tbl{overflow-x:auto;margin-top:16px;border:1px solid var(--line);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:.86rem;min-width:620px}
+th{text-align:left;font:600 .7rem/1.2 var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);
+  background:var(--bg-2);padding:10px 12px;border-bottom:1px solid var(--line)}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tr:last-child td{border-bottom:0}
+tr.row-bad td{background:var(--bad-bg)}
+td small{display:block;color:var(--muted);margin-top:3px}
+pre{font:12.5px/1.5 var(--mono);background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto;
+  max-height:420px;margin:12px 0 0;color:#cdd6e2;white-space:pre}
+.anchor{scroll-margin-top:16px}
+
+/* provenance */
+.prov dl{margin:0}
+.digest{font-family:var(--mono);font-size:.85rem;overflow-wrap:anywhere}
+footer.page{border-top:1px solid var(--line);color:var(--faint);font-size:.8rem;padding:22px 0 40px}
+footer.page p{margin:0 0 6px}
+
+@media (max-width:900px){
+  .verdict{grid-template-columns:1fr}
+  .facts{border-left:0;padding-left:0;border-top:1px solid var(--line);padding-top:20px}
+}
+@media (max-width:720px){
+  .flow{grid-template-columns:1fr;gap:14px}
+  .flow li{display:grid;grid-template-columns:32px 1fr;column-gap:14px;padding:0}
+  .flow li::after{display:none}
+  .flow b{margin-top:0}
+  .flow .sub{grid-column:2}
+  .findings li{grid-template-columns:1fr;gap:6px}
+}
+@media (max-width:600px){
+  .wrap{padding:0 16px}
+  body{font-size:14px}
+  .verdict{padding:22px 20px}
+  .verdict h1{font-size:clamp(1.25rem,5.6vw,1.75rem);overflow-wrap:break-word}
+  .banner{flex-direction:column;gap:4px}
+  details.check>summary .src{display:none}
+  .facts{grid-template-columns:1fr}
+  .cards{grid-template-columns:1fr}
+  .kv{grid-template-columns:1fr;gap:2px 0}
+  .kv dd{margin-bottom:10px}
+  .decision{padding:20px}
+}
+@media print{
+  :root{--bg:#fff;--bg-2:#f4f5f7;--surface:#fff;--surface-2:#fff;--line:#d2d6dc;--line-2:#d2d6dc;--text:#151515;--muted:#4d5258;--faint:#6a6e73;
+    --ok:#1e7b34;--bad:#c9190b;--warn:#8f5d00;--off:#6a6e73;--info:#0066cc}
+  body{background:#fff;font-size:11pt}
+  .verdict p,.decision p,.body>p{color:#151515}
+  details.check::details-content{content-visibility:visible;display:block}
+  details.check,.card,.decision,.verdict{break-inside:avoid}
+  a{color:inherit}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="product">
+      <span class="glyph" aria-hidden="true">OCP</span>
+      <div>OpenShift site readiness<small>Disconnected bare-metal &middot; pre-installation validation</small></div>
+    </div>
+    {% if demo %}
+    <span class="env env-demo" data-environment="demo">Demo &middot; {{ report.demo_scenario | default('n/a') | e }}</span>
+    {% else %}
+    <span class="env env-live" data-environment="live">Live environment</span>
+    {% endif %}
+  </div>
+</header>
+
+<main class="wrap">
+
+<section class="verdict t-{{ vtone | e }}" data-verdict="{{ verdict | e }}" aria-labelledby="verdict">
+  <div>
+    <div class="eyebrow">Readiness verdict</div>
+    <h1 id="verdict">{{ verdict | e }}</h1>
+    {% if verdict == 'NOT_READY' %}
+    <p><strong>{{ failed | length | e }} {{ 'check' if failed | length == 1 else 'checks' }} failed:</strong>
+      {% for f in failed %}{{ title(f) }}{{ ', ' if not loop.last }}{% endfor %}.
+      {% if report.checks.dns.failed_records | default([]) %}DNS records that did not resolve as expected:
+      {{ items(report.checks.dns.failed_records) }}.{% endif %}</p>
+    <p>The readiness-report job fails deliberately on this verdict, so the approval gate cannot be reached and
+      nothing downstream runs. Fix the findings and relaunch the workflow.</p>
+    {% elif verdict == 'READY_WITH_LIMITATIONS' %}
+    <p>Nothing failed, but {{ limited | length | e }} of {{ names | length | e }} checks did not produce a confirmed
+      result against a real environment: {% for f in limited %}{{ title(f) }} ({{ st(report.checks[f] | default({})) }}){{ ', ' if not loop.last }}{% endfor %}.</p>
+    <p>The workflow may proceed to human approval. Whoever approves is accepting those limitations.</p>
+    {% elif verdict == 'READY' %}
+    <p>Every check executed and passed{% if n.fixture %}, {{ n.fixture | e }} of them against fixture data rather than a live service{% endif %}.</p>
+    <p>The workflow may proceed to human approval.</p>
+    {% else %}
+    <p>The report carries no recognised verdict. Treat the environment as not validated.</p>
+    {% endif %}
+  </div>
+  <dl class="facts">
+    <div class="wide"><dt>Cluster</dt><dd><code>{{ report.cluster | default('unknown') | e }}</code></dd></div>
+    <div><dt>OpenShift</dt><dd>{{ report.release | default('unknown') | e }}</dd></div>
+    <div><dt>Environment</dt><dd>{{ (('Demo, scenario ' ~ (report.demo_scenario | default('n/a'))) if demo else 'Live') | e }}</dd></div>
+    <div><dt>Generated</dt><dd>{{ (report.generated | default('unknown') | string | replace('T', ' ') | replace('Z', ' UTC')) | e }}</dd></div>
+    <div><dt>Launched by</dt><dd>{{ report.launched_by | default('unknown') | e }}</dd></div>
+    <div><dt>Report job</dt><dd>{{ report.job_id | default('n/a') | e }}</dd></div>
+    <div><dt>Workflow job</dt><dd>{{ report.workflow_job_id | default('n/a') | e }}</dd></div>
+  </dl>
+</section>
+
+{% if report.bundle_is_draft | default(false) | bool %}
+<div class="banner banner-bad" role="note"><strong>Draft export</strong>
+  <span><code>DRAFT_NOT_VALIDATED.txt</code> was present in this bundle: the export had unresolved warnings.</span></div>
+{% endif %}
+{% if demo %}
+<div class="banner banner-demo" role="note"><strong>Demo mode</strong>
+  <span>Scenario <code>{{ report.demo_scenario | default('n/a') | e }}</code>. The bundle and DNS zone are fixtures from this
+  repository. A <b>SIMULATED</b> check contacted nothing, so its status is not a validation result. Only PASS and
+  FAIL come from checks that actually ran. No installation media is generated and no hardware is touched.</span></div>
 {% endif %}
 
-<div class="banner {{ 'banner-fail' if report.overall == 'NOT_READY' else ('banner-demo' if report.overall == 'READY_WITH_LIMITATIONS' else 'banner-pass') }}">
-<strong>{{ report.overall }}</strong>
-{% if report.overall == 'NOT_READY' %}
-&mdash; failed: {{ report.failed_checks | join(', ') }}. The readiness report
-job fails deliberately, which makes the approval gate unreachable.
-{% elif report.overall == 'READY_WITH_LIMITATIONS' %}
-&mdash; nothing failed, but one or more checks were simulated, skipped, or
-could not confirm their result: {{ report.not_executed | join(', ') }}.
-Approval is available; the approver is accepting those limitations.
-{% else %}
-&mdash; every branch executed against a real environment and passed.
-{% endif %}
-<br>Approval requested from: <code>{{ report.approval_requested_from }}</code>
-</div>
+<section class="tally" aria-label="Summary">
+  <div class="counts">
+    <div class="count c-ok{{ ' zero' if not n.pass }}" data-count="pass"><b>{{ n.pass | e }}</b><span>Passed</span></div>
+    <div class="count c-bad{{ ' zero' if not n.fail }}" data-count="fail"><b>{{ n.fail | e }}</b><span>Failed</span></div>
+    <div class="count c-warn{{ ' zero' if not n.unconfirmed }}" data-count="unconfirmed"><b>{{ n.unconfirmed | e }}</b><span>Unconfirmed</span></div>
+    <div class="count c-warn{{ ' zero' if not n.simulated }}" data-count="simulated"><b>{{ n.simulated | e }}</b><span>Simulated &middot; not run</span></div>
+    <div class="count c-off{{ ' zero' if not n.skipped }}" data-count="skipped"><b>{{ n.skipped | e }}</b><span>Skipped</span></div>
+    {% if n.other %}<div class="count c-off" data-count="other"><b>{{ n.other | e }}</b><span>Unrecognised status</span></div>{% endif %}
+  </div>
+  <div class="bar" aria-hidden="true">{% for name in names %}<i class="t-{{ tn(report.checks[name]) }}" title="{{ title(name) }}: {{ st(report.checks[name]) }}"></i>{% endfor %}</div>
+  <p class="note">{{ (n.pass - n.fixture) | e }} of {{ names | length | e }} checks passed against a live service{% if n.fixture %}, and
+    {{ n.fixture | e }} passed against fixture data{% endif %}. Simulated and skipped checks are never counted as passed.</p>
+</section>
 
-{% if report.bundle_is_draft %}
-<div class="banner banner-fail"><strong>Draft export.</strong> DRAFT_NOT_VALIDATED.txt was present
-in this bundle - the export had unresolved warnings.</div>
-{% endif %}
+<section aria-labelledby="checks-h">
+  <h2 id="checks-h">Validation checks</h2>
+  <div class="cards">
+  {% for name in names %}
+  {% set c = report.checks[name] %}
+  <article class="card t-{{ tn(c) }}" data-check="{{ name | e }}" data-status="{{ st(c) }}">
+    <header>
+      <div><h3>{{ title(name) }}</h3><p class="purpose">{{ meta[name].purpose | default('Additional check') | e }}</p></div>
+      {{ pill(c) }}
+    </header>
+    <dl>
+    {% if name == 'dns' and c.records is defined %}
+      {% set ok = c.records | selectattr('status', 'defined') | selectattr('status', 'eq', 'PASS') | list | length %}
+      <dt>Records</dt><dd>{{ ok | e }} of {{ c.records | length | e }} as expected</dd>
+      {% if c.failed_records | default([]) %}<dt>Failed</dt><dd>{{ items(c.failed_records) }}</dd>{% endif %}
+      <dt>Source</dt><dd>{% if c.mode | default('') == 'fixture' %}fixture zone{% else %}{{ items(c.resolvers | default([]), 'resolvers not recorded') }}{% endif %}</dd>
+    {% elif name == 'ntp' %}
+      <dt>Sources</dt><dd>{{ items(c.sources | default([])) }}</dd>
+      {% if c.unreachable | default([]) %}<dt>No answer</dt><dd>{{ items(c.unreachable) }}</dd>{% endif %}
+    {% elif name == 'registry' %}
+      <dt>Mirror</dt><dd>{{ items(c.hosts | default([])) }}</dd>
+      {% if c.release_payload is defined %}<dt>Release</dt><dd>{{ c.release_payload | e }}</dd>{% endif %}
+      {% if c.cert_expires is defined %}<dt>Cert expires</dt><dd>{{ date(c.cert_expires) }}</dd>{% endif %}
+    {% elif name == 'vips' %}
+      <dt>Probed</dt><dd>{{ items(c.probed | default([])) }}</dd>
+      {% if c.answering | default([]) %}<dt>In use</dt><dd>{{ items(c.answering) }}</dd>{% endif %}
+    {% elif name == 'bastion' %}
+      {% if c.status | default('') == 'SKIPPED' or c.free_gb is not defined %}<dt>Free space</dt><dd><span class="none">not measured</span></dd>
+      {% else %}<dt>Free space</dt><dd>{{ c.free_gb | e }} GB</dd>{% endif %}
+      {% if c.min_required_gb is defined %}<dt>Required</dt><dd>{{ c.min_required_gb | e }} GB</dd>{% endif %}
+    {% elif name == 'bmc' %}
+      <dt>Hosts</dt><dd>{{ items(c.hosts | default([c.host] if c.host is defined else [])) }}</dd>
+      {% if c.power is defined %}<dt>Power</dt><dd>{{ c.power | e }}</dd>{% endif %}
+      {% if c.bios_version_installed is defined %}<dt>BIOS</dt><dd>{{ c.bios_version_installed | e }} (approved {{ c.bios_version_expected | default('unset') | e }})</dd>{% endif %}
+    {% endif %}
+    </dl>
+    {% if c.detail is defined %}<p class="detail">{{ c.detail | e }}</p>{% endif %}
+    <footer>{{ source(c) }}<a href="#check-{{ name | e }}">Evidence &rarr;</a></footer>
+  </article>
+  {% endfor %}
+  </div>
+</section>
 
-<h2>Summary</h2>
-<table>
-<tr><th>Branch</th><th>Status</th><th>Detail</th></tr>
-{% for name, c in report.checks.items() %}
-{% set st = c.status | default('UNKNOWN') %}
-<tr>
-  <td><code>{{ name }}</code></td>
-  <td class="{{ st | lower | replace('_','-') }}">{{ st }}</td>
-  <td>{{ c.detail | default('') }}</td>
-</tr>
-{% endfor %}
-</table>
+<section class="decision" data-approval="{{ 'blocked' if verdict == 'NOT_READY' else ('eligible' if verdict in ['READY', 'READY_WITH_LIMITATIONS'] else 'unknown') }}" aria-labelledby="decision-h">
+  <h2 id="decision-h" class="eyebrow">Approval status</h2>
+  {% set blocked = verdict != 'READY' and verdict != 'READY_WITH_LIMITATIONS' %}
+  <ol class="flow">
+    <li class="t-{{ 'bad' if n.fail else 'ok' }}"><span class="dot">1</span><b>Validation</b><span class="sub">{{ names | length | e }} checks, {{ n.fail | e }} failed</span></li>
+    <li class="t-{{ vtone | e }}"><span class="dot">2</span><b>Readiness report</b><span class="sub">This document &middot; {{ verdict | e }}</span></li>
+    <li class="t-{{ 'bad' if blocked else 'warn' }}"><span class="dot">3</span><b>Human approval</b><span class="sub">{{ 'Not reachable' if blocked else 'Pending in AAP' }}</span></li>
+    <li class="t-{{ 'bad' if blocked else 'off' }}"><span class="dot">4</span><b>Execution</b><span class="sub">{{ 'Blocked' if blocked else 'Waits for the approval decision' }}</span></li>
+  </ol>
+  {% if verdict == 'NOT_READY' %}
+  <h3>Execution blocked</h3>
+  <p>The readiness-report job fails on <code>NOT_READY</code>, and the approval node sits on its success edge, so no
+    approver is asked and hardware preparation, ISO generation and virtual-media boot do not run.</p>
+  <ul class="findings">
+  {% for f in failed %}
+    <li><span>{{ pill(report.checks[f] | default({})) }}<b>{{ title(f) }}</b></span><em>{{ (report.checks[f].detail | default('See the evidence below.')) | e }}{% if f == 'dns' and report.checks.dns.failed_records | default([]) %} Records: {{ items(report.checks.dns.failed_records) }}{% endif %}</em></li>
+  {% endfor %}
+  </ul>
+  {% elif not blocked %}
+  <h3>Eligible for human approval</h3>
+  <p>This report is generated <b>before</b> the approval step and does not record a decision. Whether execution was
+    authorised is recorded on the <b>Authorise execution</b> node of {% if report.workflow_job_id | default('n/a') | string != 'n/a' %}workflow job {{ report.workflow_job_id | e }}{% else %}the workflow job{% endif %} in AAP.
+    Approval requested from: <code>{{ report.approval_requested_from | default('not specified') | e }}</code>.</p>
+  {% if limited %}
+  <p>Approving accepts these limitations:</p>
+  <ul class="findings">
+  {% for f in limited %}
+    {% set c = report.checks[f] | default({}) %}
+    <li><span>{{ pill(c) }}<b>{{ title(f) }}</b></span><em>{{ {'SIMULATED': 'Not executed: demo mode, nothing was contacted.',
+        'SKIPPED': 'Not executed: the branch did not run or could not measure.',
+        'UNCONFIRMED': 'Executed, but the result could not be positively confirmed.'}[c.status | default('')] | default('') | e }}</em></li>
+  {% endfor %}
+  </ul>
+  {% else %}
+  <p>No limitations: every check executed and passed.</p>
+  {% endif %}
+  {% else %}
+  <h3>Not eligible</h3>
+  <p>The verdict is not recognised, so no approval should be given on the basis of this report.</p>
+  {% endif %}
+</section>
 
-<h2>DNS</h2>
-{% if report.checks.dns.records is defined %}
-<table>
-<tr><th>Record</th><th>Expected</th><th>Resolved</th><th>Result</th></tr>
-{% for r in report.checks.dns.records %}
-<tr>
-  <td><code>{{ r.name }}</code></td>
-  <td><code>{{ r.expect | join(', ') if r.expect else 'any A record' }}</code></td>
-  <td><code>{{ r.actual | join(', ') if r.actual else 'NXDOMAIN' }}</code></td>
-  <td class="{{ r.status | lower }}">{{ r.status }}</td>
-</tr>
-{% endfor %}
-</table>
-<p class="meta">Resolved via {{ report.checks.dns.mode | default('unknown') }}
-{% if report.checks.dns.resolvers | default([], true) %} &middot; resolvers
-<code>{{ report.checks.dns.resolvers | join(', ') }}</code>{% endif %}.</p>
-{% else %}
-<p>{{ report.checks.dns.status | default('SKIPPED') }} &mdash;
-{{ report.checks.dns.detail | default('no record-level detail was published.') }}</p>
-{% endif %}
+<section aria-labelledby="detail-h">
+  <h2 id="detail-h">Evidence</h2>
+  {% for name in names %}
+  {% set c = report.checks[name] %}
+  {% set s = c.status | default('UNKNOWN') | string | upper %}
+  <details class="check anchor" id="check-{{ name | e }}"{{ ' open' if s in ['FAIL', 'UNCONFIRMED'] or name == 'dns' }}>
+    <summary><h3>{{ title(name) }}</h3>{{ source(c) }}{{ pill(c) }}</summary>
+    <div class="body">
+      {% if c.detail is defined %}<p>{{ c.detail | e }}</p>{% endif %}
+      {% set keys = c.keys() | reject('in', ['status', 'detail', 'records', 'tracking', 'tools']) | list %}
+      {% if keys %}
+      <dl class="kv">
+      {% for k in keys %}<dt>{{ labels[k] | default(k) | e }}</dt><dd>{{ value(name, k, c) }}</dd>
+      {% endfor %}
+      </dl>
+      {% endif %}
+      {% if name == 'dns' and c.records is defined %}
+      <div class="tbl"><table>
+        <thead><tr><th>Record</th><th>Expected</th><th>Resolved</th><th>Result</th></tr></thead>
+        <tbody>
+        {% for r in c.records %}
+        <tr class="{{ 'row-bad' if r.status | default('') == 'FAIL' }}">
+          <td><code>{{ r.name | default('unnamed') | e }}</code>{% if r.why is defined %}<small>{{ r.why | e }}</small>{% endif %}</td>
+          <td>{{ items(r.expect | default([]), 'any A record') }}</td>
+          <td>{{ items(r.actual | default([]), 'NXDOMAIN') }}</td>
+          <td>{{ pill(r) }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+      {% if c.tracking | default([]) %}<pre aria-label="chronyc tracking">{{ c.tracking | join('\n') | e }}</pre>{% endif %}
+      {% if c.tools | default([]) %}<pre aria-label="client tool versions">{{ c.tools | join('\n\n') | e }}</pre>{% endif %}
+    </div>
+  </details>
+  {% endfor %}
+</section>
 
-<h2>Time, trust and platform</h2>
-<table>
-<tr><th>Check</th><th>Status</th><th>Detail</th></tr>
-<tr><td>NTP sources</td>
-    <td class="{{ report.checks.ntp.status | default('SKIPPED') | lower }}">{{ report.checks.ntp.status | default('SKIPPED') }}</td>
-    <td><code>{{ report.checks.ntp.sources | default([], true) | join(', ') }}</code>
-    {% if report.checks.ntp.unreachable | default([]) %} &middot; unreachable:
-    <code>{{ report.checks.ntp.unreachable | default([], true) | join(', ') }}</code>{% endif %}</td></tr>
-<tr><td>Mirror registry</td>
-    <td class="{{ report.checks.registry.status | default('SKIPPED') | lower }}">{{ report.checks.registry.status | default('SKIPPED') }}</td>
-    <td><code>{{ report.checks.registry.hosts | default([], true) | join(', ') }}</code>
-    &middot; certificate expires {{ report.checks.registry.cert_expires | default('n/a') }}
-    &middot; release payload {{ report.checks.registry.release_payload_state | default('n/a') }}</td></tr>
-<tr><td>VIPs probed (must be free)</td>
-    <td class="{{ report.checks.vips.status | default('SKIPPED') | lower }}">{{ report.checks.vips.status | default('SKIPPED') }}</td>
-    <td><code>{{ report.checks.vips.probed | default([], true) | join(', ') }}</code>
-    {% if report.checks.vips.answering | default([]) %} &middot; already answering:
-    <code>{{ report.checks.vips.answering | default([], true) | join(', ') }}</code>{% endif %}</td></tr>
-<tr><td>Bastion free space</td>
-    <td class="{{ report.checks.bastion.status | default('SKIPPED') | lower }}">{{ report.checks.bastion.status | default('SKIPPED') }}</td>
-    <td>{{ report.checks.bastion.free_gb | default('n/a') }} GB free
-    &middot; {{ report.checks.bastion.min_required_gb | default('n/a') }} GB required</td></tr>
-<tr><td>BMC</td>
-    <td class="{{ report.checks.bmc.status | default('SKIPPED') | lower }}">{{ report.checks.bmc.status | default('SKIPPED') }}</td>
-    <td>{{ report.checks.bmc.detail | default('power ' ~ (report.checks.bmc.power | default('n/a'))
-      ~ ' &middot; BIOS config drift ' ~ (report.checks.bmc.bios_drift | default('n/a'))
-      ~ ' &middot; firmware ' ~ (report.checks.bmc.firmware_state | default('n/a'))
-      ~ ' (installed ' ~ (report.checks.bmc.bios_version_installed | default('n/a'))
-      ~ ', approved ' ~ (report.checks.bmc.bios_version_expected | default('n/a')) ~ ')') }}</td></tr>
-</table>
+<section class="prov" aria-labelledby="prov-h">
+  <h2 id="prov-h">Provenance</h2>
+  <details class="check" open>
+    <summary><h3>Inputs and execution</h3></summary>
+    <div class="body">
+      <dl class="kv">
+        <dt>Bundle SHA-256</dt><dd class="digest">{{ report.bundle_sha256 | default('unknown') | e }}</dd>
+        <dt>Draft export</dt><dd>{{ 'yes' if report.bundle_is_draft | default(false) | bool else 'no' }}</dd>
+        <dt>Execution environment</dt><dd><code>{{ report.execution_environment | default('unknown') | e }}</code></dd>
+        <dt>Report job / workflow job</dt><dd>{{ report.job_id | default('n/a') | e }} / {{ report.workflow_job_id | default('n/a') | e }}</dd>
+        <dt>Generated</dt><dd>{{ report.generated | default('unknown') | e }}</dd>
+      </dl>
+    </div>
+  </details>
+  <details class="check">
+    <summary><h3>Raw result set</h3><span class="src">The <code>readiness_report</code> workflow artifact, as published</span></summary>
+    <div class="body"><pre>{{ report | to_nice_json | e }}</pre></div>
+  </details>
+</section>
 
-<p class="meta">This report was produced as a side effect of the readiness run.
-It names the exact input digest it validated against. Retain it with the
-change record.</p>
+</main>
 
-</body></html>
+<footer class="page">
+  <div class="wrap">
+    <p>A point-in-time record of the bundle digest above, produced by the <code>readiness_report</code> role of
+      openshift-airgap-aap. Retain it with the change record.</p>
+    <p>Community automation, not a Red Hat product. This file contains infrastructure names and addresses: share it as you would the job output.</p>
+  </div>
+</footer>
+
+</body>
+</html>

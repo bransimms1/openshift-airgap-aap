@@ -123,7 +123,11 @@ openshift-airgap-aap/
 │   └── 99_remediate_dns.yml            # demo-mode DNS remediation
 ├── roles/
 │   ├── airgap_bundle_facts/            # parses the bundle, derives expectations
-│   └── readiness_report/
+│   └── readiness_report/               # verdict, HTML dashboard, artifacts
+├── tools/
+│   └── fetch_readiness_report.py       # save a job's dashboard locally
+├── tests/
+│   └── test_readiness_report.py        # dashboard rendering and retrieval
 └── controller/                         # controller-as-code
     ├── apply_all.yml                   # credential type + job templates + workflow
     ├── credential_types/bmc_redfish.yml
@@ -297,13 +301,16 @@ while `demo_mode` is true.
   `controller/credential_types/`; every task that touches them sets `no_log: true`.
 - **Pin and sign the execution environment.** Record its image digest in the
   readiness report — the template already carries the field.
-- **Decide where evidence is retained.** The structured `readiness_report`
-  artifact is retained by Automation Controller with the workflow job, and is
-  what downstream nodes and the audit trail consume. The HTML and JSON files
-  that `20_readiness_report` renders are written inside the execution pod and
-  are **ephemeral** — this repository does not upload them to object storage, a
-  PVC or an artifact repository. If you need durable rendered reports, add that
-  step; nothing here provides it.
+- **Decide where evidence is retained.** `20_readiness_report` publishes two
+  job artifacts, which Automation Controller keeps in its database with the job:
+  `readiness_report`, the structured result set that downstream nodes and the
+  audit trail consume, and `readiness_report_html`, the rendered dashboard,
+  compressed. `tools/fetch_readiness_report.py` saves the dashboard as a local
+  file; see [docs/DEMO-SETUP.md §5](docs/DEMO-SETUP.md#5-viewing-the-readiness-dashboard).
+  Both last only as long as AAP's job retention. The HTML and JSON files written
+  inside the execution pod are **ephemeral**. If you need reports to outlive job
+  cleanup, copy them to the change record or an artifact repository. Nothing
+  here does that.
 - **Use automation mesh rather than SSH across network boundaries.** Place
   execution nodes inside the isolated segment and reach them through hop nodes.
 - **Do not run the AAP that builds a cluster on that cluster.** The dependency

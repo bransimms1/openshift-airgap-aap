@@ -22,9 +22,10 @@ pull-secret*
 vault-password*
 *.vault
 
-# Generated evidence — retain in the change record, not in Git
-readiness-report-*.html
-readiness-report-*.json
+# Generated evidence — retain in the change record, not in Git. The leading *
+# also covers job1234-readiness-report-*.html from tools/fetch_readiness_report.py.
+*readiness-report-*.html
+*readiness-report-*.json
 
 # Ansible / tooling
 collections/ansible_collections/

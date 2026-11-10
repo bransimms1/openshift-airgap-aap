@@ -62,6 +62,9 @@ verify.
 | Every playbook parses, on all three ansible-core versions | syntax job |
 | Both demo scenarios run end to end, each node in its own process and filesystem root | demo job |
 | A failed validation makes the approval gate unreachable | demo job, `failing_dns` |
+| The dashboard is published as a job artifact on both paths, including the failed `NOT_READY` report job | demo job |
+| Dashboard rendering: verdicts, status per check, counts, approval wording, HTML escaping, no external resources | demo job, `tests/test_readiness_report.py` |
+| `tools/fetch_readiness_report.py` against a fake Controller API: job, workflow and latest lookup, token and basic auth, missing, hidden, oversized and truncated artifacts | demo job, `tests/test_readiness_report.py` |
 | Controller-as-code parses, via `awx.awx` namespace substitution | syntax job |
 | No literal credentials in the tree or in any commit | secrets job |
 | Documentation references, fixtures and build instructions match the tree | docs job |
@@ -74,6 +77,8 @@ verify.
 | Run-time behaviour of `redfish_info`, `redfish_command`, `get_certificate`, `x509_certificate_info` and the `dig` lookup | Demo mode reaches none of them — there is no BMC and no registry in CI, so those branches report `SIMULATED`. CI proves the tasks parse and the modules resolve, not that they work against real endpoints |
 | Whether `ansible.controller` accepts these module parameters | Automation Hub content, which a public runner cannot install. `awx.awx` shares module names but the two collections drift. `controller-validate.yml` checks this and requires `AUTOMATION_HUB_TOKEN`; without it the job is skipped rather than passed |
 | Applying controller-as-code to a live Controller | Mutates a real system. Belongs in an opt-in job against a disposable instance |
+| Retrieving a dashboard from a live AAP | The helper is tested against a fake API built from the AWX source (`artifacts` on `GET /api/controller/v2/jobs/<id>/`, `workflow_nodes`, `?name=&order_by=`). Gateway token handling and the TLS setup of a real route are not exercised |
+| How the dashboard looks | Tests check structure and wording, not rendering. Check visual changes in a browser |
 | Building the execution environment image | Requires `registry.redhat.io` credentials |
 | Behaviour against real hardware | There is none in CI, which is why demo fixtures exist |
 | Whether `demo/bundle/` would install | The fixtures are intentionally not installable — see `SECURITY.md` |

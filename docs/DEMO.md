@@ -174,6 +174,9 @@ Open `20-readiness-report` to see the verdict block: `dns FAIL`, the other
 branches labelled with their state, and the failure message naming the exact
 record to create.
 
+The same evidence, as a dashboard: `tools/fetch_readiness_report.py <job id> --open`.
+See [DEMO-SETUP.md §5](DEMO-SETUP.md#5-viewing-the-readiness-dashboard).
+
 ---
 
 ## 5. Scenario: `passing`

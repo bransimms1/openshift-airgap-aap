@@ -72,25 +72,58 @@
     state: directory
     mode: "0750"
 
+- name: Name this run's report files
+  ansible.builtin.set_fact:
+    _report_file: "readiness-report-{{ cluster_name | default('cluster') }}-{{ ansible_date_time.epoch }}"
+
 - name: Render the human-readable report
   ansible.builtin.template:
     src: readiness_report.html.j2
-    dest: "{{ report_workdir }}/readiness-report-{{ cluster_name | default('cluster') }}-{{ ansible_date_time.epoch }}.html"
+    dest: "{{ report_workdir }}/{{ _report_file }}.html"
     mode: "0644"
 
 - name: Write the machine-readable report
   ansible.builtin.copy:
     content: "{{ report | to_nice_json }}"
-    dest: "{{ report_workdir }}/readiness-report-{{ cluster_name | default('cluster') }}-{{ ansible_date_time.epoch }}.json"
+    dest: "{{ report_workdir }}/{{ _report_file }}.json"
     mode: "0644"
 
-# The published artifact is what survives the pod. The rendered files are a
-# convenience - see SECURITY.md on retaining them.
+# The files above live in this job's pod and go when it does. Controller keeps
+# a job's set_stats artifacts in its database, so the rendered page travels as
+# one, compressed. tools/fetch_readiness_report.py turns it back into a file.
+- name: Compress the rendered report for the job artifact
+  community.general.archive:
+    path: "{{ report_workdir }}/{{ _report_file }}.html"
+    dest: "{{ report_workdir }}/{{ _report_file }}.html.gz"
+    format: gz
+    mode: "0644"
+
+- name: Read the compressed report back
+  ansible.builtin.slurp:
+    src: "{{ report_workdir }}/{{ _report_file }}.html.gz"
+  register: _report_html_gz
+
+# Artifacts are also handed to every later node as extra variables, so an
+# oversized page is left out rather than carried through the approval and
+# execution jobs. The structured readiness_report is published either way.
+- name: Prepare the rendered-report artifact
+  ansible.builtin.set_fact:
+    _report_html_artifact: >-
+      {{ {'filename': _report_file ~ '.html', 'encoding': 'gzip+base64',
+          'content': _report_html_gz.content}
+         if (_report_html_gz.content | length) <= (report_html_artifact_max_bytes | int)
+         else {'filename': _report_file ~ '.html', 'omitted': true,
+               'reason': 'The compressed report is ' ~ (_report_html_gz.content | length)
+                         ~ ' bytes, over report_html_artifact_max_bytes ('
+                         ~ report_html_artifact_max_bytes ~ '). The structured readiness_report artifact is complete.'} }}
+
+# The published artifacts are what survive the pod.
 - name: Publish the summary to the workflow
   ansible.builtin.set_stats:
     data:
       readiness_report: "{{ report }}"
       readiness_overall: "{{ _overall }}"
+      readiness_report_html: "{{ _report_html_artifact }}"
 
 - name: Show the verdict in the job output
   ansible.builtin.debug:
@@ -122,9 +155,14 @@
       Every branch executed against a real environment and passed.
       {% endif %}
 
-      Published as the readiness_report workflow artifact, which Controller
-      retains with this job. HTML and JSON copies were rendered to
-      {{ report_workdir }}, inside this job's pod, which does not outlive it.
+      Published as the readiness_report and readiness_report_html artifacts,
+      which Controller retains with this job. The dashboard is
+      {{ 'omitted from the artifact: ' ~ _report_html_artifact.reason if _report_html_artifact.omitted | default(false)
+         else (_report_html_gz.content | length) ~ ' bytes compressed' }}.
+      To open it on a workstation:
+        tools/fetch_readiness_report.py {{ report.job_id }} --open
+      The HTML and JSON files in {{ report_workdir }} are inside this job's pod
+      and do not outlive it.
 
 # Published above, failed here, so the evidence exists either way.
 - name: Fail the report when the environment is NOT_READY

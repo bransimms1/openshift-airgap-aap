@@ -1,0 +1,117 @@
+{
+  "bundle_is_draft": false,
+  "bundle_sha256": "fd772dd5eea60420accd57b68f9f89bad968921be7924762860842656e607144",
+  "check_bastion": {
+    "detail": "Demo mode: free space measured for real against the execution environment; client tool versions not checked because the sample bundle carries no binaries.",
+    "free_gb": 0.0,
+    "min_required_gb": 1,
+    "status": "SKIPPED",
+    "tools": []
+  },
+  "check_bmc": {
+    "detail": "Demo mode, no Redfish endpoint. In production this reads system and firmware inventory over Redfish, compares installed BIOS against the approved manifest, asserts BIOS attributes in check mode, and confirms the boot device rootDeviceHints points at is presented. Credentials come from the AAP credential type and never appear in job output.",
+    "hosts": [
+      "master-0",
+      "master-1",
+      "master-2"
+    ],
+    "status": "SIMULATED"
+  },
+  "check_dns": {
+    "failed_records": [],
+    "mode": "fixture",
+    "records": [
+      {
+        "actual": [
+          "10.42.10.5"
+        ],
+        "expect": [
+          "10.42.10.5"
+        ],
+        "name": "api.ocp-demo.lab.example.com",
+        "status": "PASS",
+        "why": "external API endpoint"
+      },
+      {
+        "actual": [
+          "10.42.10.5"
+        ],
+        "expect": [
+          "10.42.10.5"
+        ],
+        "name": "api-int.ocp-demo.lab.example.com",
+        "status": "PASS",
+        "why": "control plane and machine-config server"
+      },
+      {
+        "actual": [
+          "10.42.10.6"
+        ],
+        "expect": [
+          "10.42.10.6"
+        ],
+        "name": "test.apps.ocp-demo.lab.example.com",
+        "status": "PASS",
+        "why": "wildcard *.apps must resolve to the ingress VIP"
+      },
+      {
+        "actual": [
+          "10.42.10.11"
+        ],
+        "expect": [],
+        "name": "master-0.ocp-demo.lab.example.com",
+        "status": "PASS",
+        "why": "node record must resolve"
+      },
+      {
+        "actual": [
+          "10.42.10.12"
+        ],
+        "expect": [],
+        "name": "master-1.ocp-demo.lab.example.com",
+        "status": "PASS",
+        "why": "node record must resolve"
+      },
+      {
+        "actual": [
+          "10.42.10.13"
+        ],
+        "expect": [],
+        "name": "master-2.ocp-demo.lab.example.com",
+        "status": "PASS",
+        "why": "node record must resolve"
+      }
+    ],
+    "resolvers": [
+      "10.42.10.53"
+    ],
+    "status": "PASS"
+  },
+  "check_ntp": {
+    "detail": "Demo mode. In production this queries each declared source directly from the install subnet with chronyd -Q and asserts that it answered.",
+    "sources": [
+      "10.42.10.53"
+    ],
+    "status": "SIMULATED"
+  },
+  "check_registry": {
+    "detail": "Demo mode. In production this fetches /v2/ over TLS validated by the bundle's own additionalTrustBundle, reads the certificate the registry presents, and probes for the release payload.",
+    "hosts": [
+      "registry.lab.example.com:8443"
+    ],
+    "status": "SIMULATED"
+  },
+  "check_vips": {
+    "detail": "Demo mode. In production each VIP is probed from the install subnet and the check asserts silence - an address that already answers is a VIP conflict waiting to happen.",
+    "probed": [
+      "10.42.10.5",
+      "10.42.10.6"
+    ],
+    "status": "SIMULATED"
+  },
+  "cluster_fqdn": "ocp-demo.lab.example.com",
+  "cluster_name": "ocp-demo",
+  "demo_mode": true,
+  "demo_scenario": "passing",
+  "ocp_release": "4.20.3"
+}

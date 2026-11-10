@@ -114,6 +114,15 @@ print(d.get('readiness_overall','<none>'))
 ")
 echo "Readiness verdict: ${VERDICT}"
 
+# The dashboard, recovered from the carried artifacts alone - the same decode
+# tools/fetch_readiness_report.py applies to a job fetched from Controller.
+if python3 "${REPO}/tools/fetch_readiness_report.py" --from-file "${ART}" \
+     -o "${WORK}/readiness-report.html" >/dev/null 2>"${WORK}/dashboard.err"; then
+  echo "Dashboard recovered from artifacts: ${WORK}/readiness-report.html"
+else
+  echo "Dashboard NOT recovered from artifacts: $(head -1 "${WORK}/dashboard.err")"
+fi
+
 echo
 if [ ${#FAILED_NODES[@]} -eq 0 ]; then
   echo "All nodes succeeded independently."

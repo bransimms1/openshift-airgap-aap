@@ -1,0 +1,19 @@
+{
+  "bundle_is_draft": true,
+  "bundle_sha256": "<b>not-a-digest</b>",
+  "check_dns": {
+    "failed_records": ["\"><img src=x onerror=alert(1)>.example.internal"],
+    "mode": "live",
+    "records": [
+      {"actual": [], "expect": ["10.0.0.1"], "name": "\"><img src=x onerror=alert(1)>.example.internal", "status": "FAIL", "why": "<script>alert('why')</script>"}
+    ],
+    "resolvers": ["10.0.0.53"],
+    "status": "FAIL"
+  },
+  "check_ntp": {"detail": "R&D <iframe srcdoc='x'></iframe>", "sources": ["ntp' onmouseover='alert(1)"], "status": "SIMULATED"},
+  "cluster_fqdn": "<script>alert('cluster')</script>",
+  "cluster_name": "hostile",
+  "demo_mode": true,
+  "demo_scenario": "<svg onload=alert(1)>",
+  "ocp_release": "4.20.3\"><style>body{display:none}</style>"
+}

@@ -76,6 +76,9 @@ jobs:
             ansible-playbook --syntax-check -i inventories/site-a/hosts.yml "$pb"
           done
 
+      - name: Compile the Python helpers
+        run: python3 -m py_compile tools/*.py tests/*.py
+
       # controller/*.yml import ansible.controller, which a public runner cannot
       # install. awx.awx carries the same module names, so substituting the
       # namespace into throwaway copies confirms the files parse. It does not
@@ -158,6 +161,8 @@ jobs:
             || { echo "::error::a node failed"; exit 1; }
           echo "$out" | grep -q "READY_WITH_LIMITATIONS" \
             || { echo "::error::expected READY_WITH_LIMITATIONS"; exit 1; }
+          echo "$out" | grep -q "Dashboard recovered from artifacts" \
+            || { echo "::error::the dashboard did not survive as a workflow artifact"; exit 1; }
 
       - name: Failing DNS scenario blocks the gate
         run: |
@@ -167,6 +172,14 @@ jobs:
             || { echo "::error::expected NOT_READY"; exit 1; }
           echo "$out" | grep -q "Nodes that failed: 10_validate_dns 20_readiness_report" \
             || { echo "::error::DNS and the report should both fail, making the gate unreachable"; exit 1; }
+          echo "$out" | grep -q "Dashboard recovered from artifacts" \
+            || { echo "::error::a failed NOT_READY report must still publish its dashboard"; exit 1; }
+
+      # Renders the dashboard through the real report node for five fixtures
+      # (NOT_READY, READY_WITH_LIMITATIONS, READY, sparse, hostile input) and
+      # drives tools/fetch_readiness_report.py against a fake Controller API.
+      - name: Readiness dashboard and report retrieval
+        run: python3 -m unittest -v tests/test_readiness_report.py
 
   secrets:
     name: Secret scan

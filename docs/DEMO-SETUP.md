@@ -151,7 +151,7 @@ Before presenting, launch the workflow once with `failing_dns` and once with
 `passing` (§4). This pulls the EE image onto the nodes, so the live run is not
 waiting on the pull. It also tells you how long a run takes on your cluster;
 pod start-up dominates. Keep both finished runs open in browser tabs as a
-fallback.
+fallback, and save both dashboards beforehand (§5) so they open instantly.
 
 ---
 
@@ -190,12 +190,18 @@ the rest. While it runs:
 - `20-readiness-report` is red, by design: `NOT_READY`, with `dns FAIL
   api-int...`. The approval node never ran. Without the evidence, nobody is
   even asked.
+- Switch to the dashboard for this run (§5). Point at the red verdict, the one
+  failed card, the `NXDOMAIN` row in the DNS table, and *Execution blocked*.
+  The job that produced it failed, and the evidence still survived it.
 
 **5:00 – Passing run (3 min).** Relaunch with *Demo scenario* `passing`. DNS
 passes, and the report shows `READY_WITH_LIMITATIONS`: nothing failed, but it
-lists exactly which checks were simulated or skipped. The workflow stops at
-**Authorise execution**. Open it and read the description: approving means
-accepting those limitations. Click **Approve**.
+lists exactly which checks were simulated or skipped. Open this run's
+dashboard next to the visualizer: the tally shows **1 passed, 4 simulated, 1
+skipped**, and the approval panel lists the limitations an approver accepts.
+It says *eligible*, not *approved*: the report is written before anyone
+decides. Back in AAP the workflow stops at **Authorise execution**. Read the
+description, then click **Approve**.
 
 **8:00 – Behind the gate (1 min).** `30`, `31` and `32` run, and each prints
 `DEMO MODE - no hardware touched`, `nothing generated`, or `no virtual media
@@ -210,7 +216,135 @@ nothing.
 
 ---
 
-## 5. Troubleshooting
+## 5. Viewing the readiness dashboard
+
+`20-readiness-report` renders a self-contained HTML dashboard: the verdict,
+one card per check, the approval status, and every piece of evidence the
+branches published. The job's pod, and the files in it, are deleted when the
+job ends, so the role also publishes the page, compressed, as the
+`readiness_report_html` job artifact. Controller keeps job artifacts in its
+database, and `tools/fetch_readiness_report.py` turns one back into a file.
+
+It needs Python 3.8 or later and nothing else, so the `python3` that ships
+with macOS works.
+
+### Find the job
+
+In AAP, open **Automation Execution → Jobs**, then the
+`openshift-site-readiness` run. In its visualizer, click the
+**20-readiness-report** node. The job ID is in that job's details and in the
+page URL. The number on the workflow run itself is the *workflow job* ID.
+
+You need only one of them:
+
+```bash
+cd openshift-airgap-aap
+export AAP_HOST=https://aap.apps.example.com
+export AAP_TOKEN=...            # see "Credentials" below
+
+tools/fetch_readiness_report.py 1234 --open             # the report job ID
+tools/fetch_readiness_report.py --workflow 1230 --open  # or the workflow job ID
+tools/fetch_readiness_report.py --latest --open         # or the newest report job
+```
+
+The helper prints the path of the saved file, for example
+`job1234-readiness-report-ocp-demo-1762817867.html` in the current directory,
+along with the verdict. `--open` opens the file in your default browser. Without
+it, run `open job1234-readiness-report-*.html`. Add `-o ~/Desktop/` to save it
+somewhere else, and `--json` to save the structured report next to it.
+
+### Both scenarios
+
+Retrieve one dashboard per run. The failing run's report job ends **Failed**,
+deliberately, and its dashboard is retrieved the same way. The role publishes
+the artifact before it fails the job.
+
+```bash
+tools/fetch_readiness_report.py --workflow <failing_dns workflow job ID> -o ~/Desktop/
+tools/fetch_readiness_report.py --workflow <passing workflow job ID>     -o ~/Desktop/
+```
+
+### Credentials
+
+- **Token:** create one in AAP under **Access Management → Users → your user
+  → Tokens**, with *Read* scope, and put it in `AAP_TOKEN`.
+- **Username and password:** export `AAP_USERNAME` instead and the helper
+  prompts for the password. `AAP_PASSWORD` is read too, if it is set.
+
+The helper sends the credential only to `AAP_HOST`, never prints it, and never
+writes it into the page. It needs read access to the job and nothing more.
+Saved files are created readable only by you (mode `0600`).
+
+If the AAP route uses the cluster's self-signed ingress certificate, Python
+rejects it. Pass the cluster's CA:
+
+```bash
+oc get configmap default-ingress-cert -n openshift-config-managed \
+  -o jsonpath='{.data.ca-bundle\.crt}' > ingress-ca.pem
+tools/fetch_readiness_report.py 1234 --ca-file ingress-ca.pem --open
+```
+
+`--insecure` skips verification instead. Use it only on a lab cluster. With a
+python.org install of Python on macOS, run its *Install Certificates* command
+once, or public CAs will fail too.
+
+If you cannot run the helper against AAP, save the job's JSON another way and
+decode it offline:
+`curl -H "Authorization: Bearer $AAP_TOKEN" "$AAP_HOST/api/controller/v2/jobs/1234/" > job.json`,
+then `tools/fetch_readiness_report.py --from-file job.json`.
+
+### What survives the pod, and for how long
+
+| Item | Where it lives | Lifetime |
+|---|---|---|
+| `readiness_report`, the structured result set | Job artifact, Controller database | Until the job is deleted |
+| `readiness_report_html`, the dashboard (gzip, base64, about 10 KB) | Job artifact, Controller database | Until the job is deleted |
+| HTML and JSON files in `/tmp/readiness-report-<job id>/` | The job's pod | Gone when the job ends |
+
+Jobs are deleted by AAP's **Cleanup Job Details** management job, on whatever
+schedule your AAP has. Nothing here changes that schedule. A deleted job
+returns `404`, and the helper says so. Save the HTML with the change record
+if you need it for longer. The page shows hostnames and addresses: share it
+the way you would share the job output.
+
+Both artifacts are also passed to the approval node and the execution jobs as
+extra variables, the way every `set_stats` artifact is passed down a
+workflow. If a site's report ever compresses to more than
+`report_html_artifact_max_bytes` (256 KB by default), the role publishes a
+note in place of the page. The helper reports that, and `--json` still saves
+the structured report.
+
+### Do I need to rebuild anything?
+
+- **No EE rebuild.** The role uses `community.general.archive` and
+  `ansible.builtin.slurp`, which `ee-airgap-readiness` already carries. The
+  helper runs on your workstation, not in the EE.
+- **No controller-as-code rerun.** The templates, the workflow and the survey
+  are unchanged.
+- **Sync the project.** *Update revision on launch* does this when the workflow
+  is next launched. Jobs that ran before the update published no dashboard.
+  The helper says so, and `--json` saves their structured report.
+
+### Presenting: visualizer and dashboard side by side
+
+1. Before the session, open the dashboards saved for the `failing_dns` and
+   `passing` runs, in browser tabs next to the AAP visualizer tabs for those
+   runs.
+2. **Failing run.** In the visualizer, click the red `20-readiness-report`
+   node and show the verdict block in its output. Switch to the dashboard: the
+   same verdict, the DNS card in red, the `api-int` row in the evidence table,
+   and *Execution blocked*. Go back to the visualizer and show that the
+   approval node never ran.
+3. **Passing run.** On the dashboard, show the tally and the limitations
+   list, then *Eligible for human approval*. In the visualizer, open
+   **Authorise execution** and approve it there. The dashboard does not change
+   when you approve: it records the evidence, not the decision.
+4. For anyone who asks where the page came from, run the helper live against
+   the run you just finished.
+
+---
+
+## 6. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
@@ -224,3 +358,6 @@ nothing.
 | Inventory `demo` has no hosts | Sync its project source |
 | `bastion` shows `SKIPPED` | Expected in an EE pod; see the table at the top |
 | The approval node never appears | Expected for `failing_dns`. For `passing`, check that every branch reported |
+| `fetch_readiness_report.py`: `HTTP 404 ... /api/controller/v2/jobs/<id>/` | Wrong ID, a workflow job ID (use `--workflow`), or the job was cleaned up |
+| `fetch_readiness_report.py`: `published the structured readiness_report but no dashboard` | The job ran before the project was synced. Relaunch the workflow, or use `--json` |
+| `fetch_readiness_report.py`: `TLS verification failed` | Pass the ingress CA with `--ca-file` (§5) |

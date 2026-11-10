@@ -1,0 +1,64 @@
+{
+  "awx_job_id": 4812,
+  "awx_workflow_job_id": 4803,
+  "awx_user_name": "change-board",
+  "approver_group": "platform-approvers",
+  "bundle_is_draft": false,
+  "bundle_sha256": "3b6f0c1e9a7d4b2c8e5f1a0d9c7b6a5e4f3d2c1b0a9e8d7c6b5a4f3e2d1c0b9a",
+  "check_bastion": {
+    "detail": "Free space and client tool versions checked on the bastion.",
+    "free_gb": 412.6,
+    "min_required_gb": 200,
+    "status": "PASS",
+    "tools": [
+      "Client Version: 4.20.3\nKustomize Version: v5.5.0",
+      "openshift-install 4.20.3\nbuilt from commit 0000000\nrelease image registry.site-a.example.internal:8443/openshift/release-images:4.20.3-x86_64"
+    ]
+  },
+  "check_bmc": {
+    "bios_config_drift": false,
+    "bios_version_expected": "2.15.1",
+    "bios_version_installed": "2.15.1",
+    "host": "master-0",
+    "power": "Off",
+    "reachable": true,
+    "status": "PASS"
+  },
+  "check_dns": {
+    "failed_records": [],
+    "mode": "live",
+    "records": [
+      {"actual": ["10.20.30.5"], "expect": ["10.20.30.5"], "name": "api.ocp-prod.site-a.example.internal", "status": "PASS", "why": "external API endpoint"},
+      {"actual": ["10.20.30.5"], "expect": ["10.20.30.5"], "name": "api-int.ocp-prod.site-a.example.internal", "status": "PASS", "why": "control plane and machine-config server"},
+      {"actual": ["10.20.30.6"], "expect": ["10.20.30.6"], "name": "test.apps.ocp-prod.site-a.example.internal", "status": "PASS", "why": "wildcard *.apps must resolve to the ingress VIP"},
+      {"actual": ["10.20.30.11"], "expect": [], "name": "master-0.ocp-prod.site-a.example.internal", "status": "PASS", "why": "node record must resolve"},
+      {"actual": ["10.20.30.12"], "expect": [], "name": "master-1.ocp-prod.site-a.example.internal", "status": "PASS", "why": "node record must resolve"},
+      {"actual": ["10.20.30.13"], "expect": [], "name": "master-2.ocp-prod.site-a.example.internal", "status": "PASS", "why": "node record must resolve"}
+    ],
+    "resolvers": ["10.20.0.53", "10.20.0.54"],
+    "status": "PASS"
+  },
+  "check_ntp": {
+    "sources": ["10.20.0.123", "10.20.0.124"],
+    "status": "PASS",
+    "tracking": ["Reference ID    : 0A14007B (10.20.0.123)", "Stratum         : 3", "System time     : 0.000012 seconds fast of NTP time"],
+    "unreachable": []
+  },
+  "check_registry": {
+    "cert_expires": "20271231235959Z",
+    "cert_host": "registry.site-a.example.internal:8443",
+    "hosts": ["registry.site-a.example.internal:8443"],
+    "release_payload": "CONFIRMED",
+    "status": "PASS",
+    "unreachable": []
+  },
+  "check_vips": {
+    "answering": [],
+    "probed": ["10.20.30.5", "10.20.30.6"],
+    "status": "PASS"
+  },
+  "cluster_fqdn": "ocp-prod.site-a.example.internal",
+  "cluster_name": "ocp-prod",
+  "demo_mode": false,
+  "ocp_release": "4.20.3"
+}
