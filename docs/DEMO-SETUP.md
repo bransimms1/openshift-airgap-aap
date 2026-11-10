@@ -119,7 +119,7 @@ Create these objects once, by hand. The names match what `controller/` expects.
 | 5 | **Credential** `aap-bootstrap` | Type *Red Hat Ansible Automation Platform*, the AAP URL, an admin user and password |
 | 6 | **Job template** `controller-as-code` | Inventory `demo`, project `openshift-airgap-aap`, playbook `controller/apply_all.yml`, EE *Default execution environment* (it must contain `ansible.controller`; the shipped `ee-supported-rhel9` does), credential `aap-bootstrap`, extra variables `controller_demo_setup: true` |
 
-Launch `controller-as-code`. It should finish with `ok=14 failed=0`. It creates:
+Launch `controller-as-code`. It should finish with `ok=15 failed=0`. It creates:
 
 - the `BMC / Redfish` credential type
 - twelve job templates, `00-bundle-intake` through `32-boot-virtual-media`, on
@@ -127,7 +127,12 @@ Launch `controller-as-code`. It should finish with `ok=14 failed=0`. It creates:
 - the `openshift-site-readiness` workflow with its five-question survey, its 13
   nodes and the approval gate
 
-It is safe to run again; the second run only refreshes the approval node.
+It is safe to run again; a second run reports `changed=0`.
+
+The approval gate is created in two tasks: one creates the approval node, the
+next links its success edge to `prepare-hosts`. Passing `success_nodes`
+together with `approval_node` makes the module post the edge to the approval
+template as well, which AAP rejects. CI checks that the two stay separate.
 
 To use an existing organization instead, add `controller_organization: <name>`
 to the extra variables and create objects 2–4 in that organization.
@@ -213,6 +218,7 @@ nothing.
 | Job pods stuck pulling the image (`ImagePullBackOff`) | Missing `system:image-puller` grant (§2), or a wrong image path in the EE |
 | `couldn't resolve module/action 'community.crypto...'` | The job template is not using `ee-airgap-readiness` |
 | `controller-as-code` fails with `Unsupported parameters ... parents` | An old checkout. Sync the project |
+| `controller-as-code` fails at `Node - approval gate` with `could not be found at .../workflow_approval_templates/<id>/success_nodes/` | An old checkout, from before the gate's edge moved to its own task. Sync the project and rerun |
 | Templates exist but there is no workflow | The bootstrap ran `controller/job_templates.yml`. Point it at `controller/apply_all.yml` |
 | `controller-as-code` fails with `... not found` | Objects 1–4 are missing, or are named differently. Create them or pass the matching `controller_*` variables |
 | Inventory `demo` has no hosts | Sync its project source |

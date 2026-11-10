@@ -94,6 +94,15 @@
             permits hardware preparation, ISO generation and virtual-media boot
             against the hosts in the selected inventory.
           timeout: 3600
+
+    # Linked in a second call. Given alongside approval_node, the module also
+    # applies success_nodes to the approval template's URL, which AAP rejects:
+    # "could not be found at .../workflow_approval_templates/<id>/success_nodes/".
+    # Without approval_node it updates only the node, and is idempotent.
+    - name: Node - approval gate, success edge to prepare hosts
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "approve-execute"
         success_nodes: ["prepare-hosts"]
 
     # --- convergence + evidence -------------------------------------------

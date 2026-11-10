@@ -99,6 +99,28 @@ jobs:
             ansible-playbook --syntax-check "/tmp/ctl/$rel"
           done
 
+      # Regression: workflow_job_template_node applies edges given alongside
+      # approval_node to the approval template's URL too, and AAP 2.6 answers
+      # 404 (.../workflow_approval_templates/<id>/success_nodes/). The syntax
+      # check above cannot see that, so check for the combination directly.
+      - name: Approval nodes declare no edges in the same task
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          bad = []
+          for f in glob.glob("controller/**/*.yml", recursive=True):
+              for play in yaml.safe_load(open(f)) or []:
+                  for t in (play.get("tasks") or []) if isinstance(play, dict) else []:
+                      for mod, args in t.items():
+                          if mod.endswith("workflow_job_template_node") and isinstance(args, dict) \
+                             and "approval_node" in args \
+                             and {"success_nodes", "always_nodes", "failure_nodes"} & args.keys():
+                              bad.append(f"{f}: {t.get('name')}")
+          if bad:
+              sys.exit("approval_node combined with *_nodes; link edges in a separate task:\n  " + "\n  ".join(bad))
+          print("ok")
+          PY
+
   demo:
     name: Demo scenarios (ansible-core ${{ matrix.ansible }})
     runs-on: ubuntu-latest
