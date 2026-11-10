@@ -20,18 +20,19 @@ Nothing below ansible-core 2.15 is tested.
 
 ### Collection versions
 
-Collections are declared with floors, not pins, in `collections/requirements.yml`
-and `execution-environment/requirements.yml`:
+Collections are declared with floors in `collections/requirements.yml` and
+`execution-environment/requirements.yml`. Two also have ceilings, so an EE built
+today still matches the ansible-core 2.16 in AAP 2.6:
 
 | Collection | Floor | Used for |
 |---|---|---|
 | `ansible.utils` | >= 5.1.2 | network and IP address filters |
 | `ansible.posix` | >= 1.6.0 | callbacks, general POSIX modules |
-| `community.general` | >= 9.0.0 | `redfish_info`, `redfish_command`, `dig` lookup |
-| `community.crypto` | >= 2.20.0 | `get_certificate`, `x509_certificate_info` |
+| `community.general` | >= 9.0.0, < 12.0.0 | `redfish_info`, `redfish_command`, `dig` lookup |
+| `community.crypto` | >= 2.20.0, < 3.0.0 | `get_certificate`, `x509_certificate_info` |
 | `kubernetes.core` | >= 5.0.0 | Day 2 |
 
-CI resolves the newest release satisfying each floor, so a breaking collection
+CI resolves the newest release within those bounds, so a breaking collection
 release surfaces as a CI failure. For a disconnected site the opposite is
 correct: pin exact versions, sync them into Private Automation Hub, sign, and
 verify.
@@ -41,11 +42,11 @@ verify.
 
 ### Known limitations
 
-- Current `community.crypto` and `community.general` releases no longer declare
-  support for ansible-core below 2.17, so the 2.15 and 2.16 matrix entries emit a
-  `Collection ... does not support Ansible version` warning. These are warnings,
-  not failures, and both entries pass. AAP's own execution environment ships
-  collection versions matched to its core.
+- `community.general` 12+ and `community.crypto` 3+ declare ansible-core 2.17 or
+  later (`community.general` 14 declares 2.19), which is why they are capped.
+  Within the caps, `community.general` 11 declares 2.16, so the 2.15 matrix
+  entry still emits a `Collection ... does not support Ansible version`
+  warning. It is a warning, not a failure.
 - On AAP 2.5 and later the platform gateway does not serve `/api/v2/`, so
   `awx.awx` cannot drive a supported AAP install. Use `ansible.controller`, which
   is present in the supported execution environment.

@@ -1,0 +1,20 @@
+---
+# One entry point for the standard bootstrap, in dependency order: the
+# credential type, then the job templates, then the workflow that links them.
+# Notifications are optional and stay separate - see notifications.yml.
+#
+# From inside AAP, this is the playbook for the single hand-made bootstrap job
+# template. From a workstation:
+#
+#   ansible-playbook controller/apply_all.yml -e controller_demo_setup=true
+#
+# Variables such as controller_demo_setup and controller_organization apply to
+# all three.
+- name: Credential type
+  ansible.builtin.import_playbook: credential_types/bmc_redfish.yml
+
+- name: Job templates
+  ansible.builtin.import_playbook: job_templates.yml
+
+- name: Workflow
+  ansible.builtin.import_playbook: workflow_templates.yml

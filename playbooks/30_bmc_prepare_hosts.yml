@@ -1,5 +1,25 @@
 ---
 # Post-approval. The first playbook in the repository that changes anything.
+#
+# Two plays, like 15_validate_bmc_redfish.yml. The demo inventory's bmc group
+# is empty, so without the first play a demo run would print only "no hosts
+# matched" and never say why nothing happened.
+- name: Prepare hardware for installation - demo
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: DEMO - say plainly that no hardware is touched
+      ansible.builtin.debug:
+        msg: |
+          DEMO MODE - no hardware touched, no power state changed.
+
+          This node exists to show that hardware preparation sits behind
+          the approval gate. In a real run it would gracefully power off
+          each host in the bmc group so that virtual media can be attached
+          to a machine that is not running.
+      when: demo_mode | default(false) | bool
+
 - name: Prepare hardware for installation
   hosts: bmc
   gather_facts: false

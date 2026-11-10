@@ -85,12 +85,17 @@ jobs:
         run: |
           ansible-galaxy collection install "awx.awx:==${AWX_AWX_VERSION}"
           mkdir -p /tmp/ctl && cp -r controller/surveys /tmp/ctl/
+          # Copy everything first: apply_all.yml imports the others.
+          files=()
           for f in controller/*.yml controller/credential_types/*.yml; do
             [ "$(basename "$f")" = "requirements.yml" ] && continue
             rel="${f#controller/}"
             mkdir -p "/tmp/ctl/$(dirname "$rel")"
             sed 's/ansible\.controller\./awx.awx./g' "$f" > "/tmp/ctl/$rel"
-            echo "== $f"
+            files+=("$rel")
+          done
+          for rel in "${files[@]}"; do
+            echo "== controller/$rel"
             ansible-playbook --syntax-check "/tmp/ctl/$rel"
           done
 

@@ -31,7 +31,8 @@ Three overall verdicts:
 | `NOT_READY` | At least one branch failed. The report job fails; the gate is unreachable |
 
 The passing scenario reports **`READY_WITH_LIMITATIONS`**, because NTP, registry,
-VIP and Redfish validation are simulated.
+VIP and Redfish validation are simulated, and the bastion disk check is skipped
+inside an execution pod (see below).
 
 ### What each branch actually does in demo mode
 
@@ -40,7 +41,7 @@ VIP and Redfish validation are simulated.
 | `00-bundle-intake` | Parses the fixture bundle in `demo/bundle/` and derives cluster name, VIPs, CIDRs, MACs, NTP sources, mirror host and six DNS expectations — three fixed records (`api`, `api-int`, `*.apps`) plus one per declared host. Nothing is hardcoded. |
 | `01-validate-bundle` | Every semantic assertion runs for real: VIPs inside `machineNetwork`, no CIDR overlap, unique and syntactically valid MACs, `rendezvousIP` belongs to a control-plane host, `rootDeviceHints` present, trust bundle present. |
 | `10-validate-dns` | Real grading logic against a fixture zone in `demo/dns/`. This is the branch that differs between the two scenarios. |
-| `14-validate-bastion` | Free space measured for real against the execution environment's own filesystem. The client-tool check is simulated, because the fixture bundle carries no `tools/` directory. |
+| `14-validate-bastion` | Free space is measured from the host's mount facts. In an AAP job pod, and in most containers, the root filesystem is overlay, which those facts leave out, so the branch reports **SKIPPED** rather than inventing a number. On a real bastion it measures `/`. The client-tool check never runs in demo mode, because the fixture bundle carries no `tools/` directory. |
 | `11-validate-ntp`, `12-validate-registry`, `13-validate-vips` | Report **SIMULATED** — no NTP server, registry or VIPs exist to contact. Against a real mirror, `12` reports **UNCONFIRMED** when the registry requires authentication and will not enumerate its release tags. |
 | `15-validate-bmc` | Reports **SIMULATED** or **SKIPPED** depending on the survey. Never dials out. |
 
@@ -48,17 +49,19 @@ The report labels each branch with its state, so a `READY_WITH_LIMITATIONS`
 verdict shows exactly which checks were simulated, skipped, or ran without
 being able to confirm their result.
 
-Firmware comparison in `15-validate-bmc` is advisory: it is published as
-`firmware_state` (`MATCH`, `DRIFT`, `UNKNOWN_INSTALLED` or `BASELINE_UNSET`) and
-never blocks BMC readiness.
+Firmware comparison in `15-validate-bmc` is advisory: in production the
+installed and approved BIOS versions are published, and a mismatch is reported
+without blocking BMC readiness.
 
 ---
 
 ## 2. Setup
 
-The objects `controller/` expects, and the commands that apply it, are in the
-README under **Controller-as-code prerequisites**. Apply it with
-`-e controller_demo_setup=true`, which is the default.
+Step-by-step setup on AAP 2.6 on OpenShift, including the execution
+environment build and a presentation script, is in
+[DEMO-SETUP.md](DEMO-SETUP.md). Everything is applied by
+`controller/apply_all.yml` with `-e controller_demo_setup=true`, which is the
+default.
 
 Demo-specific notes:
 
@@ -142,7 +145,7 @@ Launch `openshift-site-readiness` with these survey selections:
 | `01-validate-bundle` | Success. Every semantic assertion passes |
 | `10-validate-dns` | **Failed.** `api-int` is NXDOMAIN |
 | `11`, `12`, `13`, `15` | Success, reporting SIMULATED |
-| `14-validate-bastion` | Success |
+| `14-validate-bastion` | Success, reporting SKIPPED in an execution pod |
 | `20-readiness-report` | **Failed, deliberately.** Verdict `NOT_READY`. The report is produced and published before the failure, so the evidence exists |
 | `approve-execute` | Never becomes reachable, because the report's success edge was not taken |
 
@@ -186,7 +189,7 @@ Relaunch and change one field:
 | Node | Result |
 |---|---|
 | `10-validate-dns` | Success — all six records resolve |
-| `20-readiness-report` | Success. Verdict `READY_WITH_LIMITATIONS` — nothing failed, but NTP, registry, VIPs and BMC were not executed against a real environment |
+| `20-readiness-report` | Success. Verdict `READY_WITH_LIMITATIONS` — nothing failed, but NTP, registry, VIPs and BMC were not executed against a real environment, and the bastion check was skipped |
 | `approve-execute` | Waiting for approval |
 
 The workflow pauses at the approval node, which shows **Approve / Deny**. It can

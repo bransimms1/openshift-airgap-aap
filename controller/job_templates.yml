@@ -26,9 +26,9 @@
 # The reliable way to apply this is from inside AAP itself:
 #   1. Create a credential of type "Red Hat Ansible Automation Platform"
 #      pointing at this same controller.
-#   2. Create ONE job template by hand - playbook controller/job_templates.yml,
+#   2. Create ONE job template by hand - playbook controller/apply_all.yml,
 #      EE ee-supported, that credential attached.
-#   3. Run it. It creates everything else, including the workflow.
+#   3. Run it. It applies the credential type, this file and the workflow.
 #
 # controller_host and controller_oauthtoken are optional below: with that
 # credential attached, ansible.controller reads them from the environment and

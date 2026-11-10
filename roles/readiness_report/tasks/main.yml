@@ -102,8 +102,12 @@
         {{ 'DEMO MODE - scenario ' ~ report.demo_scenario if report.demo_mode else 'live environment' }}
 
       {% for name, c in report.checks.items() %}
-        {{ '%-9s'|format(name) }} {{ c.status | default('UNKNOWN') }}
+        {{ '%-9s'|format(name) }} {{ c.status | default('UNKNOWN') }}{{ '  ' ~ c.failed_records | join(', ') if c.failed_records | default([]) else '' }}
       {% endfor %}
+      {% if report.demo_mode %}
+        SIMULATED = demo mode, nothing real was contacted. Only PASS and FAIL
+        are results of a check that actually ran.
+      {% endif %}
 
       {% if report.overall == 'NOT_READY' %}
       FAILED: {{ report.failed_checks | join(', ') }}
@@ -118,8 +122,9 @@
       Every branch executed against a real environment and passed.
       {% endif %}
 
-      Evidence written to {{ report_workdir }} and published as the
-      readiness_report workflow artifact.
+      Published as the readiness_report workflow artifact, which Controller
+      retains with this job. HTML and JSON copies were rendered to
+      {{ report_workdir }}, inside this job's pod, which does not outlive it.
 
 # Published above, failed here, so the evidence exists either way.
 - name: Fail the report when the environment is NOT_READY

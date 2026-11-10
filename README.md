@@ -97,6 +97,7 @@ openshift-airgap-aap/
 │   └── node-isolation-test.sh          # each node separately, as AAP runs them
 ├── docs/
 │   ├── DEMO.md                         # run the demo with no hardware
+│   ├── DEMO-SETUP.md                   # AAP 2.6 on OpenShift setup + 10-minute script
 │   ├── DESIGN-NOTES.md                 # maintainer notes
 │   └── architecture.svg
 ├── execution-environment/              # the reproducibility boundary
@@ -124,6 +125,7 @@ openshift-airgap-aap/
 │   ├── airgap_bundle_facts/            # parses the bundle, derives expectations
 │   └── readiness_report/
 └── controller/                         # controller-as-code
+    ├── apply_all.yml                   # credential type + job templates + workflow
     ├── credential_types/bmc_redfish.yml
     ├── job_templates.yml
     ├── workflow_templates.yml          # includes the approval node
@@ -241,10 +243,14 @@ attaches the credentials named above and defaults the inventory to `site-a`.
 ### From inside AAP
 
 The more reliable route on AAP 2.6. Create one job template by hand running
-`controller/job_templates.yml`, with a **Red Hat Ansible Automation Platform**
-credential pointing at the same controller, and run it. That credential injects
-the host and token, so `controller_hostname` and `controller_token` are not
-needed — only `-e controller_demo_setup=true|false`.
+`controller/apply_all.yml`, which applies the credential type, the job
+templates and the workflow in order. Use an execution environment that contains
+`ansible.controller` (the shipped `ee-supported-rhel9` does) and attach a
+**Red Hat Ansible Automation Platform** credential pointing at the same
+controller. That credential injects the host and token, so
+`controller_hostname` and `controller_token` are not needed — only
+`-e controller_demo_setup=true|false`. Step by step:
+[docs/DEMO-SETUP.md](docs/DEMO-SETUP.md).
 
 ### Notifications are optional
 
@@ -278,7 +284,8 @@ demo/node-isolation-test.sh failing_dns
 
 The harness runs each workflow node as a separate process with its own filesystem
 root, carrying artifacts forward the way Automation Controller does on OpenShift.
-See `docs/DEMO.md` for the full runbook.
+See `docs/DEMO.md` for the full runbook, and `docs/DEMO-SETUP.md` to set the
+demo up in AAP 2.6 on OpenShift and present it.
 
 The playbooks that generate installation media or power on hardware refuse to act
 while `demo_mode` is true.

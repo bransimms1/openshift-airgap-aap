@@ -2,6 +2,11 @@
 # The graph is the governance control. all_parents_must_converge on the report
 # node is why a failed validation stops the run - it is a property of the
 # workflow, not a convention anyone has to remember.
+#
+# Edges are declared on the PARENT node (success_nodes / always_nodes), and a
+# node can only link to children that already exist. So the nodes are defined
+# from the end of the graph back to the start: execution, gate, report, the six
+# validation branches, then intake. Read it bottom-up to follow a run.
 - name: Define the site readiness workflow
   hosts: localhost
   connection: local
@@ -14,12 +19,24 @@
     controller_organization: "Platform Engineering"
     controller_inventory_demo: "demo"
     controller_inventory_prod: "site-a"
+    validation_branches:
+      - "10-validate-dns"
+      - "11-validate-ntp"
+      - "12-validate-registry"
+      - "13-validate-vips"
+      - "14-validate-bastion"
+      - "15-validate-bmc"
     ctl: &ctl
       controller_host: "{{ controller_hostname | default(omit) }}"
       controller_oauthtoken: "{{ controller_token | default(omit) }}"
+    node: &node
+      <<: *ctl
+      workflow_job_template: "openshift-site-readiness"
+      organization: "{{ controller_organization }}"
   tasks:
 
-    - ansible.controller.workflow_job_template:
+    - name: Workflow template, survey and default inventory
+      ansible.controller.workflow_job_template:
         <<: *ctl
         name: "openshift-site-readiness"
         organization: "{{ controller_organization }}"
@@ -29,63 +46,40 @@
         ask_variables_on_launch: false
         ask_inventory_on_launch: true
 
-    # --- intake -----------------------------------------------------------
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
-        identifier: "intake"
-        unified_job_template: "00-bundle-intake"
+    # --- execution, only after a human says so -----------------------------
+    - name: Node - boot hosts from virtual media
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "boot-hosts"
+        unified_job_template: "32-boot-virtual-media"
 
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
-        identifier: "validate-bundle"
-        unified_job_template: "01-validate-bundle"
-        parents: [{ identifier: "intake", type: success }]
+    - name: Node - generate the agent ISO
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "generate-iso"
+        unified_job_template: "31-generate-agent-iso"
+        success_nodes: ["boot-hosts"]
 
-    # --- parallel validation fan-out --------------------------------------
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
-        identifier: "{{ item }}"
-        unified_job_template: "{{ item }}"
-        parents: [{ identifier: "validate-bundle", type: success }]
-      loop:
-        - "10-validate-dns"
-        - "11-validate-ntp"
-        - "12-validate-registry"
-        - "13-validate-vips"
-        - "14-validate-bastion"
-        - "15-validate-bmc"
-
-    # --- convergence + evidence -------------------------------------------
-    # Runs on success AND failure: a failed run still produces a report.
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
-        identifier: "readiness-report"
-        unified_job_template: "20-readiness-report"
-        all_parents_must_converge: true
-        parents:
-          - { identifier: "10-validate-dns",      type: always }
-          - { identifier: "11-validate-ntp",      type: always }
-          - { identifier: "12-validate-registry", type: always }
-          - { identifier: "13-validate-vips",     type: always }
-          - { identifier: "14-validate-bastion",  type: always }
-          - { identifier: "15-validate-bmc",      type: always }
+    - name: Node - prepare hosts
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "prepare-hosts"
+        unified_job_template: "30-bmc-prepare-hosts"
+        success_nodes: ["generate-iso"]
 
     # --- the gate ---------------------------------------------------------
     # Approval hangs off the REPORT, not off the validation jobs. The thing a
     # human authorises is the evidence, not the fact that six jobs finished.
     #
     # This works because 20-readiness-report fails deliberately when the
-    # verdict is NOT_READY: the success edge below is then never taken and the
-    # gate is unreachable. A verdict of READY or READY_WITH_LIMITATIONS lets
-    # the report succeed and the approver sees the report - including anything
-    # that was SIMULATED, SKIPPED or UNCONFIRMED - before deciding.
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
+    # verdict is NOT_READY: the report's success edge to this node is then
+    # never taken and the gate is unreachable. A verdict of READY or
+    # READY_WITH_LIMITATIONS lets the report succeed and the approver sees the
+    # report - including anything that was SIMULATED, SKIPPED or UNCONFIRMED -
+    # before deciding.
+    - name: Node - approval gate
+      ansible.controller.workflow_job_template_node:
+        <<: *node
         identifier: "approve-execute"
         approval_node:
           name: "Authorise execution"
@@ -100,27 +94,40 @@
             permits hardware preparation, ISO generation and virtual-media boot
             against the hosts in the selected inventory.
           timeout: 3600
-        parents:
-          - { identifier: "readiness-report", type: success }
+        success_nodes: ["prepare-hosts"]
 
-    # --- execution, only after a human says so -----------------------------
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
-        identifier: "prepare-hosts"
-        unified_job_template: "30-bmc-prepare-hosts"
-        parents: [{ identifier: "approve-execute", type: success }]
+    # --- convergence + evidence -------------------------------------------
+    # Waits for all six branches, and runs on success AND failure because each
+    # branch links to it with an always edge: a failed run still produces a
+    # report.
+    - name: Node - readiness report
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "readiness-report"
+        unified_job_template: "20-readiness-report"
+        all_parents_must_converge: true
+        success_nodes: ["approve-execute"]
 
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
-        identifier: "generate-iso"
-        unified_job_template: "31-generate-agent-iso"
-        parents: [{ identifier: "prepare-hosts", type: success }]
+    # --- parallel validation fan-out --------------------------------------
+    - name: Node - validation branches
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "{{ item }}"
+        unified_job_template: "{{ item }}"
+        always_nodes: ["readiness-report"]
+      loop: "{{ validation_branches }}"
 
-    - ansible.controller.workflow_job_template_node:
-        <<: *ctl
-        workflow: "openshift-site-readiness"
-        identifier: "boot-hosts"
-        unified_job_template: "32-boot-virtual-media"
-        parents: [{ identifier: "generate-iso", type: success }]
+    # --- intake -----------------------------------------------------------
+    - name: Node - validate bundle
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "validate-bundle"
+        unified_job_template: "01-validate-bundle"
+        success_nodes: "{{ validation_branches }}"
+
+    - name: Node - bundle intake
+      ansible.controller.workflow_job_template_node:
+        <<: *node
+        identifier: "intake"
+        unified_job_template: "00-bundle-intake"
+        success_nodes: ["validate-bundle"]
