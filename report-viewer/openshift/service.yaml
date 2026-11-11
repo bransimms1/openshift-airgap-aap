@@ -1,0 +1,17 @@
+---
+# Exposes only oauth-proxy. The viewer listens on 127.0.0.1 inside the pod and
+# has no port of its own here. The annotation has the service CA issue the
+# proxy's certificate, which the reencrypt Route trusts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: report-viewer
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: report-viewer-tls
+spec:
+  selector:
+    app: report-viewer
+  ports:
+    - name: https
+      port: 443
+      targetPort: https

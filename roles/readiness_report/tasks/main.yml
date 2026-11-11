@@ -125,6 +125,35 @@
       readiness_overall: "{{ _overall }}"
       readiness_report_html: "{{ _report_html_artifact }}"
 
+# Optional: readiness_viewer_url points at the viewer in report-viewer/. Unset,
+# or outside AAP where there is no job ID to link to, nothing changes.
+- name: Build the dashboard link
+  ansible.builtin.set_fact:
+    _viewer_url: "{{ readiness_viewer_url | default('', true) | trim | regex_replace('/+$', '') }}"
+    _viewer_link: ""
+
+- name: Link to this job's report in the viewer
+  ansible.builtin.set_fact:
+    _viewer_link: "{{ _viewer_url }}/report/{{ report.job_id }}"
+  when:
+    - _viewer_url is match('^https?://[^/\\s]+')
+    - report.job_id | string is match('^[0-9]+$')
+
+- name: Show the dashboard link
+  ansible.builtin.debug:
+    msg: "VIEW READINESS DASHBOARD: {{ _viewer_link }}"
+  when: _viewer_link | length > 0
+
+- name: Explain a configured viewer without a link
+  ansible.builtin.debug:
+    msg: >-
+      readiness_viewer_url is set to '{{ _viewer_url }}', but
+      {{ 'it is not an http(s) URL' if _viewer_url is not match('^https?://[^/\\s]+')
+         else 'this run has no AAP job ID to link to' }}, so no dashboard link was produced.
+  when:
+    - _viewer_url | length > 0
+    - _viewer_link | length == 0
+
 - name: Show the verdict in the job output
   ansible.builtin.debug:
     msg: |
@@ -159,8 +188,13 @@
       which Controller retains with this job. The dashboard is
       {{ 'omitted from the artifact: ' ~ _report_html_artifact.reason if _report_html_artifact.omitted | default(false)
          else (_report_html_gz.content | length) ~ ' bytes compressed' }}.
+      {% if _viewer_link %}
+      Open it in a browser: {{ _viewer_link }}
+      Or on a workstation:  tools/fetch_readiness_report.py {{ report.job_id }} --open
+      {% else %}
       To open it on a workstation:
         tools/fetch_readiness_report.py {{ report.job_id }} --open
+      {% endif %}
       The HTML and JSON files in {{ report_workdir }} are inside this job's pod
       and do not outlive it.
 

@@ -190,8 +190,9 @@ the rest. While it runs:
 - `20-readiness-report` is red, by design: `NOT_READY`, with `dns FAIL
   api-int...`. The approval node never ran. Without the evidence, nobody is
   even asked.
-- Switch to the dashboard for this run (§5). Point at the red verdict, the one
-  failed card, the `NXDOMAIN` row in the DNS table, and *Execution blocked*.
+- Click `VIEW READINESS DASHBOARD` in the job output (§6), or open the saved
+  copy (§5). Point at the red verdict, the one failed card, the `NXDOMAIN` row
+  in the DNS table, and *Execution blocked*.
   The job that produced it failed, and the evidence still survived it.
 
 **5:00 – Passing run (3 min).** Relaunch with *Demo scenario* `passing`. DNS
@@ -225,8 +226,14 @@ job ends, so the role also publishes the page, compressed, as the
 `readiness_report_html` job artifact. Controller keeps job artifacts in its
 database, and `tools/fetch_readiness_report.py` turns one back into a file.
 
-It needs Python 3.8 or later and nothing else, so the `python3` that ships
-with macOS works.
+There are two ways to open it:
+
+- **In a browser, from a link in the job output.** Deploy the report viewer
+  once (§6). Each report job then prints `VIEW READINESS DASHBOARD: <link>`.
+- **On a workstation, with no deployment.** `tools/fetch_readiness_report.py`,
+  described below. It needs Python 3.8 or later and nothing else, so the
+  `python3` that ships with macOS works. It is also the fallback when the
+  viewer is down.
 
 ### Find the job
 
@@ -331,9 +338,10 @@ the structured report.
    `passing` runs, in browser tabs next to the AAP visualizer tabs for those
    runs.
 2. **Failing run.** In the visualizer, click the red `20-readiness-report`
-   node and show the verdict block in its output. Switch to the dashboard: the
-   same verdict, the DNS card in red, the `api-int` row in the evidence table,
-   and *Execution blocked*. Go back to the visualizer and show that the
+   node and show the verdict block in its output. Click the
+   `VIEW READINESS DASHBOARD` link just above it, if the viewer is deployed
+   (§6), or switch to the saved dashboard. Show the same verdict, the DNS card
+   in red, the `api-int` row in the evidence table, and *Execution blocked*. Go back to the visualizer and show that the
    approval node never ran.
 3. **Passing run.** On the dashboard, show the tally and the limitations
    list, then *Eligible for human approval*. In the visualizer, open
@@ -344,7 +352,202 @@ the structured report.
 
 ---
 
-## 6. Troubleshooting
+## 6. The report viewer on OpenShift
+
+The viewer serves `https://<viewer route>/report/<job id>` to signed-in
+OpenShift users. It reads the job's `readiness_report_html` artifact from AAP
+on each request and returns the page. Nothing else is stored: no database, no
+copy of the report. When AAP's job cleanup deletes a job, its report is gone
+from the viewer too.
+
+It is optional. The workflow runs the same without it.
+
+```
+browser ──https──▶ Route (reencrypt) ──▶ oauth-proxy :8443 ──▶ viewer 127.0.0.1:8080 ──https──▶ AAP API
+                                          signs in with OpenShift,     read-only token,
+                                          admits readiness-viewers     from a Secret
+```
+
+| Piece | What it is |
+|---|---|
+| `report-viewer/viewer.py` | Python standard library, about 250 lines. Uses `tools/fetch_readiness_report.py` for the API call and decoding |
+| `report-viewer/Containerfile` | UBI 9 minimal and `python3`. Runs as any UID |
+| `report-viewer/openshift/` | Namespace, ServiceAccount, Role and RoleBinding, Service, Route, Deployment. No Secrets |
+| `report-viewer/install.sh` | Creates the Secrets, fills in images and `AAP_URL`, applies, waits, prints the URL |
+
+### Security model
+
+- **Who can open reports.** OpenShift's `oauth-proxy` signs users in with the
+  cluster's OAuth server. It then admits only users who may `get` the
+  `report-viewer` Service in `readiness-viewer`. `rbac.yaml` grants that to one
+  group, `readiness-viewers`. Cluster admins and admins of that namespace pass
+  too.
+- **What the viewer can see.** One AAP user with a token of *Read* scope. The
+  token sits in a Secret, is sent only to AAP, and never reaches a browser or
+  a log. The viewer serves only jobs named `20-readiness-report`. Set
+  `REPORT_ORGANIZATION` to restrict it to one organization as well.
+- **The viewer is never reached directly.** It listens on `127.0.0.1` inside
+  the pod, and only the proxy is exposed. It refuses report requests that
+  lack the `X-Forwarded-User` header the proxy sets. The proxy replaces any
+  value a client sends.
+- **The page is sandboxed.** Signing in decides who may look at a page. It
+  does not make the page's content trustworthy. Every response carries
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; ...;
+  sandbox`. Even a forged artifact cannot run script, load anything, submit a
+  form or be framed. The dashboard needs none of those, so it looks exactly
+  as it does offline.
+- **TLS to AAP is verified.** It uses the system trust store, or the CA you
+  supply. `AAP_VERIFY_TLS=false` exists for a lab, and the viewer logs a
+  warning when it is set.
+
+### Prerequisites
+
+- The cluster's built-in OAuth server, which every OpenShift cluster has
+  unless it was configured for direct external OIDC authentication. oauth-proxy
+  depends on it.
+- The internal image registry exposed, as in §2. Any registry the cluster can
+  pull from also works.
+- A user who can create a namespace, and a cluster admin to create the group.
+- `oc`, `podman` and `openssl` on your workstation.
+
+### Install
+
+**1. Create the AAP user and token.** In AAP, create a local user, for example
+`readiness-viewer`, and give it the **Organization Auditor** role on
+`Platform Engineering`. That role is read-only. Sign in as that user and
+create an API token with **Read** scope (**Access Management → Users →
+readiness-viewer → Tokens**). Save the token to a file only you can read, for
+example `~/readiness-viewer.token`.
+
+If the organization holds more than this workflow, the Organization Auditor role
+shows the viewer everything in it. In that case, put the readiness templates in an
+organization of their own.
+
+**2. Build the image and push it to the cluster.**
+
+```bash
+cd openshift-airgap-aap
+oc apply -f report-viewer/openshift/namespace.yaml
+
+podman build -f report-viewer/Containerfile -t report-viewer:1.0 .
+# On Apple silicon add:  --platform linux/amd64
+
+REG=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}')
+podman login -u "$(oc whoami)" -p "$(oc whoami -t)" "$REG"   # add --tls-verify=false for a self-signed ingress cert
+podman tag  report-viewer:1.0 "$REG/readiness-viewer/report-viewer:1.0"
+podman push "$REG/readiness-viewer/report-viewer:1.0"
+```
+
+**3. Get AAP's CA**, if its route uses the cluster's self-signed ingress
+certificate. Skip this if AAP has a publicly trusted certificate.
+
+```bash
+oc get configmap default-ingress-cert -n openshift-config-managed \
+  -o jsonpath='{.data.ca-bundle\.crt}' > ingress-ca.pem
+```
+
+**4. Deploy.** `install.sh` prints what it would apply with `--render`. Run
+that first if you want to review it.
+
+```bash
+export AAP_URL=https://aap.apps.example.com      # the URL you sign in to AAP with
+export AAP_TOKEN_FILE=~/readiness-viewer.token
+export AAP_CA_FILE=ingress-ca.pem                 # only if you did step 3
+report-viewer/install.sh
+```
+
+It creates the token and session Secrets if they are missing, and the CA
+ConfigMap. It pins oauth-proxy to the cluster's own image, by digest, from the
+`openshift/oauth-proxy:v4.4` image stream. Then it applies the manifests, waits
+for the rollout and prints the viewer's URL. Re-running it is safe: it updates
+the deployment and leaves the Secrets alone. To choose the hostname, set
+`VIEWER_HOST=reports.apps.example.com`. The default is
+`report-viewer-readiness-viewer.<apps domain>`.
+
+**5. Let people in.** As a cluster admin:
+
+```bash
+oc adm groups new readiness-viewers alice bob     # later: oc adm groups add-users readiness-viewers carol
+```
+
+To use a group you already have, bind it as well:
+`oc create rolebinding report-viewer-ops --role=report-viewer-access --group=<group> -n readiness-viewer`.
+
+**6. Tell AAP where the viewer is.** The route only exists after step 4, so
+this comes last. Add the variable to the extra variables of the
+`controller-as-code` job template from §3, and launch it:
+
+```yaml
+controller_demo_setup: true
+controller_readiness_viewer_url: https://report-viewer-readiness-viewer.apps.example.com
+```
+
+That sets `readiness_viewer_url` on the `openshift-site-readiness` workflow,
+and every node receives it. Without `controller_readiness_viewer_url`, the
+bootstrap leaves the workflow's variables as they are. To set it by hand
+instead, edit the workflow template's **Variables** to read
+`readiness_viewer_url: https://...`. For runs outside AAP there is no job ID,
+so there is nothing to link to.
+
+**7. Launch the workflow.** The `20-readiness-report` job prints:
+
+```
+VIEW READINESS DASHBOARD: https://report-viewer-readiness-viewer.apps.example.com/report/82
+```
+
+It prints the link for `NOT_READY` too. The job still fails, deliberately.
+
+### Verify
+
+```bash
+oc get pods -n readiness-viewer                                  # report-viewer-...  2/2  Running
+oc logs deploy/report-viewer -c viewer -n readiness-viewer        # "serving on 127.0.0.1:8080 for https://aap..."
+```
+
+Open the URL `install.sh` printed. You get the OpenShift login, then a page
+titled *Readiness report viewer*. Open `/report/<id>` for any report job run
+since the project was synced. The viewer logs one line per request, with the
+OpenShift user name and never the report's content:
+`GET /report/82 200 user=alice 143ms`.
+
+### Day 2
+
+| Task | How |
+|---|---|
+| Rotate the AAP token | `oc set data secret/report-viewer-aap-token -n readiness-viewer --from-file=token=<new token file>`. The viewer reads it on each request, so no restart is needed. The Secret reaches the pod within about a minute |
+| Update the viewer | Rebuild, push with a new tag, and re-run `install.sh` with `VIEWER_IMAGE=image-registry.openshift-image-registry.svc:5000/readiness-viewer/report-viewer:<tag>` |
+| Change who can view | `oc adm groups add-users` and `oc adm groups remove-users`. Membership is checked at sign-in, and a session lasts at most two hours, so a removed user keeps access until then. To end every session at once: `oc delete secret report-viewer-proxy -n readiness-viewer`, re-run `install.sh`, then `oc rollout restart deployment/report-viewer -n readiness-viewer` |
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| After login: *403 Forbidden* from oauth-proxy | The user is not in `readiness-viewers`. Add them (step 5). Group changes apply at the next login |
+| *Viewer cannot sign in to AAP* | AAP rejected the token: expired, deleted, or wrong. Rotate it (Day 2) |
+| *AAP is unavailable* | `oc logs deploy/report-viewer -c viewer -n readiness-viewer` names the cause. `TLS verification failed` means the CA from step 3 is missing or wrong. A timeout means the viewer cannot reach `AAP_URL` from inside the cluster |
+| *Report not found* for a job that exists | The viewer's AAP user cannot see it: give it Organization Auditor (step 1). Otherwise AAP has cleaned the job up |
+| *Not a readiness report* | The ID belongs to another job, often the workflow job. Use the link printed by `20-readiness-report` |
+| *No dashboard in this job* | The job ran before the project was synced. Relaunch the workflow |
+| `viewer` container restarting: `AAP_URL must be set` | Re-run `install.sh` with `AAP_URL` |
+| `oauth-proxy` in `ImagePullBackOff` | Set `OAUTH_PROXY_IMAGE` to an oauth-proxy image the cluster can pull, and re-run `install.sh` |
+| OpenShift login fails with a redirect URI error | The proxy's OAuth client is the ServiceAccount, which redirects only to the Route named `report-viewer`. Do not rename either |
+| No link in the job output | `readiness_viewer_url` is not reaching the job. The job prints the reason when the value is set but unusable |
+
+### Remove
+
+```bash
+oc delete project readiness-viewer       # deployment, route, Secrets, image stream
+oc delete group readiness-viewers        # if nothing else uses it
+```
+
+In AAP, remove `readiness_viewer_url` from the workflow's **Variables**. Drop
+`controller_readiness_viewer_url` from the `controller-as-code` extra
+variables. Then delete the viewer's token and the `readiness-viewer` user.
+Report jobs then print the workstation command again.
+
+---
+
+## 7. Troubleshooting
 
 | Symptom | Fix |
 |---|---|

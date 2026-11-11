@@ -1,0 +1,20 @@
+# Readiness report viewer. Build from the repository root, because the viewer
+# imports tools/fetch_readiness_report.py rather than carrying a copy:
+#
+#   podman build -f report-viewer/Containerfile -t report-viewer:1.0 .
+#
+# Python's standard library only. Runs as any UID, so OpenShift's
+# restricted-v2 SCC can assign one.
+FROM registry.access.redhat.com/ubi9/ubi-minimal:9.8
+
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 python3 \
+ && microdnf clean all
+
+COPY report-viewer/viewer.py tools/fetch_readiness_report.py /opt/report-viewer/
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+USER 1001
+EXPOSE 8080
+ENTRYPOINT ["python3", "/opt/report-viewer/viewer.py"]

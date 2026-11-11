@@ -126,8 +126,12 @@ openshift-airgap-aap/
 │   └── readiness_report/               # verdict, HTML dashboard, artifacts
 ├── tools/
 │   └── fetch_readiness_report.py       # save a job's dashboard locally
+├── report-viewer/                      # optional: dashboards in the browser, on OpenShift
+│   ├── viewer.py  Containerfile  install.sh
+│   └── openshift/                      # namespace, deployment, oauth-proxy, route
 ├── tests/
-│   └── test_readiness_report.py        # dashboard rendering and retrieval
+│   ├── test_readiness_report.py        # dashboard rendering and retrieval
+│   └── test_report_viewer.py           # the viewer, against a fake Controller API
 └── controller/                         # controller-as-code
     ├── apply_all.yml                   # credential type + job templates + workflow
     ├── credential_types/bmc_redfish.yml
@@ -305,8 +309,9 @@ while `demo_mode` is true.
   job artifacts, which Automation Controller keeps in its database with the job:
   `readiness_report`, the structured result set that downstream nodes and the
   audit trail consume, and `readiness_report_html`, the rendered dashboard,
-  compressed. `tools/fetch_readiness_report.py` saves the dashboard as a local
-  file; see [docs/DEMO-SETUP.md §5](docs/DEMO-SETUP.md#5-viewing-the-readiness-dashboard).
+  compressed. `report-viewer/` serves it in a browser behind OpenShift sign-in,
+  and `tools/fetch_readiness_report.py` saves it as a local file; see
+  [docs/DEMO-SETUP.md §5–6](docs/DEMO-SETUP.md#5-viewing-the-readiness-dashboard).
   Both last only as long as AAP's job retention. The HTML and JSON files written
   inside the execution pod are **ephemeral**. If you need reports to outlive job
   cleanup, copy them to the change record or an artifact repository. Nothing

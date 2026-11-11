@@ -1,0 +1,7 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: readiness-viewer
+  labels:
+    app.kubernetes.io/part-of: openshift-airgap-aap

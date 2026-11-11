@@ -64,6 +64,8 @@ verify.
 | A failed validation makes the approval gate unreachable | demo job, `failing_dns` |
 | The dashboard is published as a job artifact on both paths, including the failed `NOT_READY` report job | demo job |
 | Dashboard rendering: verdicts, status per check, counts, approval wording, HTML escaping, no external resources | demo job, `tests/test_readiness_report.py` |
+| The report viewer: reports, `NOT_READY` jobs, invalid IDs, non-report jobs, malformed and oversized artifacts, AAP errors and timeouts, the proxy-user requirement, security headers, escaping, manifests and `install.sh --render` | demo job, `tests/test_report_viewer.py` |
+| The viewer image builds and runs as an arbitrary UID with a read-only root filesystem | viewer-image job |
 | `tools/fetch_readiness_report.py` against a fake Controller API: job, workflow and latest lookup, token and basic auth, missing, hidden, oversized and truncated artifacts | demo job, `tests/test_readiness_report.py` |
 | Controller-as-code parses, via `awx.awx` namespace substitution | syntax job |
 | No literal credentials in the tree or in any commit | secrets job |
@@ -79,6 +81,7 @@ verify.
 | Applying controller-as-code to a live Controller | Mutates a real system. Belongs in an opt-in job against a disposable instance |
 | Retrieving a dashboard from a live AAP | The helper is tested against a fake API built from the AWX source (`artifacts` on `GET /api/controller/v2/jobs/<id>/`, `workflow_nodes`, `?name=&order_by=`). Gateway token handling and the TLS setup of a real route are not exercised |
 | How the dashboard looks | Tests check structure and wording, not rendering. Check visual changes in a browser |
+| The report viewer on a real cluster: oauth-proxy sign-in, the group check, the Route, pulling the images | Needs an OpenShift cluster. CI builds the image, runs it as an arbitrary UID with a read-only root, renders the manifests, and tests the viewer against a fake Controller API |
 | Building the execution environment image | Requires `registry.redhat.io` credentials |
 | Behaviour against real hardware | There is none in CI, which is why demo fixtures exist |
 | Whether `demo/bundle/` would install | The fixtures are intentionally not installable — see `SECURITY.md` |

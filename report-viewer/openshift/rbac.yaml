@@ -1,0 +1,30 @@
+---
+# Who may view reports. oauth-proxy (--openshift-sar) admits a signed-in user
+# only if that user may "get" the report-viewer Service in this namespace.
+# This Role grants exactly that, and the binding gives it to one group.
+#
+# Create the group and add people to it (cluster-admin):
+#   oc adm groups new readiness-viewers alice bob
+# Cluster admins and admins of this namespace pass the check anyway.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: report-viewer-access
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["report-viewer"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: report-viewer-access
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: report-viewer-access
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: readiness-viewers

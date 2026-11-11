@@ -21,10 +21,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_controller import FakeController  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "tests" / "fixtures" / "report"
@@ -43,6 +44,7 @@ SCENARIOS = {
 }
 
 _rendered = {}
+_output = {}
 
 
 def render(scenario, **extra):
@@ -81,7 +83,14 @@ def render(scenario, **extra):
         Path(preview).mkdir(parents=True, exist_ok=True)
         shutil.copy(pages[0], Path(preview) / f"{scenario}.html")
     _rendered[key] = (proc.returncode, html, artifacts, pages[0])
+    _output[key] = proc.stdout
     return _rendered[key]
+
+
+def job_output(scenario, **extra):
+    """The report job's output (JSON callback), for checking what it prints."""
+    render(scenario, **extra)
+    return _output[(scenario, tuple(sorted(extra.items())))]
 
 
 def fixture(scenario):
@@ -293,6 +302,48 @@ class Artifact(Case):
         self.assertIn("readiness_report", artifacts)
 
 
+class ViewerLink(Case):
+    """readiness_viewer_url adds a link to the job output and changes nothing else."""
+
+    VIEWER = "https://viewer.example.test"
+
+    def test_link_when_configured(self):
+        out = job_output("ready_live", readiness_viewer_url=self.VIEWER + "/")
+        self.assertIn(f"VIEW READINESS DASHBOARD: {self.VIEWER}/report/4812", out)
+        self.assertIn(f"Open it in a browser: {self.VIEWER}/report/4812", out)
+
+    def test_no_link_without_viewer(self):
+        out = job_output("ready_live")
+        self.assertNotIn("VIEW READINESS DASHBOARD", out)
+        self.assertNotIn("readiness_viewer_url", out)
+        self.assertIn("tools/fetch_readiness_report.py 4812 --open", out)
+
+    def test_not_ready_still_fails_with_a_link(self):
+        rc, _, artifacts, _ = render("not_ready_dns", readiness_viewer_url=self.VIEWER, awx_job_id=77)
+        out = job_output("not_ready_dns", readiness_viewer_url=self.VIEWER, awx_job_id=77)
+        self.assertNotEqual(rc, 0)
+        self.assertIn(f"VIEW READINESS DASHBOARD: {self.VIEWER}/report/77", out)
+        self.assertEqual(artifacts["readiness_overall"], "NOT_READY")
+        self.assertIn("readiness_report_html", artifacts)
+
+    def test_artifacts_unchanged_by_the_link(self):
+        _, html, with_link, _ = render("ready_live", readiness_viewer_url=self.VIEWER)
+        _, _, without, _ = render("ready_live")
+        self.assertEqual(sorted(with_link), sorted(without))
+        self.assertEqual(with_link["readiness_report"]["checks"], without["readiness_report"]["checks"])
+        self.assertNotIn(self.VIEWER, html)
+
+    def test_no_job_id_means_no_link(self):
+        out = job_output("ready_with_limitations", readiness_viewer_url=self.VIEWER)
+        self.assertNotIn("VIEW READINESS DASHBOARD", out)
+        self.assertIn("this run has no AAP job ID to link to", out)
+
+    def test_malformed_url_is_reported_not_linked(self):
+        out = job_output("ready_live", readiness_viewer_url="viewer.example.test")
+        self.assertNotIn("VIEW READINESS DASHBOARD", out)
+        self.assertIn("it is not an http(s) URL", out)
+
+
 class HelperFromFile(Case):
 
     def save(self, data):
@@ -332,43 +383,6 @@ class HelperFromFile(Case):
         self.assertIn("could not be decoded", r.stderr)
 
 
-class FakeController(BaseHTTPRequestHandler):
-    jobs = {}
-    nodes = {}
-
-    def log_message(self, *a):
-        pass
-
-    def reply(self, code, body):
-        data = json.dumps(body).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-    def do_GET(self):
-        auth = self.headers.get("Authorization", "")
-        basic = "Basic " + base64.b64encode(b"viewer:s3cret").decode()
-        if auth not in (f"Bearer {TOKEN}", basic):
-            return self.reply(401, {"detail": "Authentication credentials were not provided."})
-        path, _, query = self.path.partition("?")
-        prefix = "/api/controller/v2/"
-        if not path.startswith(prefix):
-            return self.reply(404, {"detail": "Not found."})
-        rest = path[len(prefix):]
-        if m := re.fullmatch(r"jobs/(\d+)/", rest):
-            job = self.jobs.get(int(m.group(1)))
-            return self.reply(200, job) if job else self.reply(404, {"detail": "Not found."})
-        if rest == "jobs/":
-            self.server.last_query = query
-            return self.reply(200, {"results": [{"id": max(self.jobs)}]})
-        if m := re.fullmatch(r"workflow_jobs/(\d+)/workflow_nodes/", rest):
-            nodes = self.nodes.get(int(m.group(1)))
-            return self.reply(200, {"results": nodes}) if nodes is not None else self.reply(404, {"detail": "Not found."})
-        return self.reply(404, {"detail": "Not found."})
-
-
 class HelperAgainstController(Case):
 
     @classmethod
@@ -376,7 +390,8 @@ class HelperAgainstController(Case):
         _, cls.fail_html, fail_art, _ = render("not_ready_dns")
         _, cls.pass_html, pass_art, _ = render("ready_with_limitations")
         old = {k: v for k, v in pass_art.items() if k != "readiness_report_html"}
-        FakeController.jobs = {
+        cls.aap = FakeController(TOKEN, basic="viewer:s3cret")
+        cls.aap.jobs = {
             102: {"id": 102, "name": "20-readiness-report", "status": "failed", "artifacts": fail_art},
             103: {"id": 103, "name": "20-readiness-report", "status": "running", "artifacts": {}},
             104: {"id": 104, "name": "20-readiness-report", "status": "successful",
@@ -385,19 +400,17 @@ class HelperAgainstController(Case):
             106: {"id": 106, "name": "30-bmc-prepare-hosts", "status": "successful", "artifacts": {}},
             110: {"id": 110, "name": "20-readiness-report", "status": "successful", "artifacts": pass_art},
         }
-        FakeController.nodes = {
+        cls.aap.nodes = {
             200: [{"identifier": "intake", "summary_fields": {"job": {"id": 90}}},
                   {"identifier": "readiness-report", "summary_fields": {"job": {"id": 102}}}],
             201: [{"identifier": "intake", "summary_fields": {"job": {"id": 91}}},
                   {"identifier": "readiness-report", "summary_fields": {}}],
         }
-        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), FakeController)
-        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
-        cls.env = {"AAP_HOST": f"http://127.0.0.1:{cls.server.server_address[1]}", "AAP_TOKEN": TOKEN}
+        cls.env = {"AAP_HOST": cls.aap.url, "AAP_TOKEN": TOKEN}
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
+        cls.aap.stop()
 
     def fetch(self, *args, env=None):
         out = Path(tempfile.mkdtemp(prefix="fetch-"))
@@ -429,8 +442,8 @@ class HelperAgainstController(Case):
         r, out = self.fetch("--latest")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(list(out.glob("job110-*.html"))[0].read_text(), self.pass_html)
-        self.assertIn("name=20-readiness-report", self.server.last_query)
-        self.assertIn("order_by=-id", self.server.last_query)
+        self.assertIn("name=20-readiness-report", self.aap.last_query)
+        self.assertIn("order_by=-id", self.aap.last_query)
 
     def test_basic_auth(self):
         r, _ = self.fetch("110", env={"AAP_HOST": self.env["AAP_HOST"], "AAP_USERNAME": "viewer",

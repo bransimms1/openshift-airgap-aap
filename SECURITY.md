@@ -10,6 +10,10 @@ Automation Controller and are injected at run time.
   sets `no_log: true`, so they do not appear in job output.
 - The pull secret comes from its own Controller credential and is never read
   from a bundle or from the tracked tree.
+- The optional report viewer (`report-viewer/`) reads AAP with a token of
+  *Read* scope belonging to a read-only user. The token lives in the
+  `report-viewer-aap-token` Secret, created by `install.sh` from a file or a
+  prompt, and is never committed, logged or sent to a browser.
 - In playbooks and inventories, reference credentials as variables
   (`{{ bmc_password }}`), never as literal values.
 - `.gitignore` lists real `install-config.yaml`, `agent-config.yaml` and

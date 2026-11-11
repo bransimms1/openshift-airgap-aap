@@ -31,6 +31,7 @@ import io
 import json
 import os
 import re
+import socket
 import ssl
 import sys
 import urllib.error
@@ -43,6 +44,8 @@ ARTIFACT = "readiness_report_html"
 REPORT_TEMPLATE = "20-readiness-report"
 REPORT_NODE = "readiness-report"          # identifier in controller/workflow_templates.yml
 MAX_HTML_BYTES = 20 * 1024 * 1024        # a dashboard is tens of KB; refuse anything absurd
+MAX_ARTIFACT_BYTES = 4 * 1024 * 1024     # encoded; the role caps it at 256 KB
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024    # one job's JSON, artifacts and extra_vars included
 FINISHED = {"successful", "failed", "error", "canceled"}
 
 
@@ -53,10 +56,11 @@ class Failure(Exception):
 # --- AAP API ------------------------------------------------------------------
 
 class Controller:
-    def __init__(self, host, api_prefix, auth_header, context):
+    def __init__(self, host, api_prefix, auth_header, context, timeout=30):
         self.base = host.rstrip("/") + "/" + api_prefix.strip("/") + "/"
         self._auth = auth_header      # never printed
         self._context = context
+        self.timeout = timeout
 
     def get(self, path, query=None):
         url = urllib.parse.urljoin(self.base, path.lstrip("/"))
@@ -64,8 +68,11 @@ class Controller:
             url += "?" + urllib.parse.urlencode(query)
         req = urllib.request.Request(url, headers={"Authorization": self._auth, "Accept": "application/json"})
         try:
-            with urllib.request.urlopen(req, context=self._context, timeout=30) as resp:
-                return json.load(resp)
+            with urllib.request.urlopen(req, context=self._context, timeout=self.timeout) as resp:
+                body = resp.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise Failure(f"{url} returned more than {MAX_RESPONSE_BYTES} bytes; refusing to parse it.")
+            return json.loads(body)
         except urllib.error.HTTPError as e:
             raise HttpError(e.code, url, _detail(e)) from None
         except urllib.error.URLError as e:
@@ -76,7 +83,11 @@ class Controller:
                     "Pass the CA that signed the AAP route with --ca-file (or AAP_CA_FILE). "
                     "--insecure skips verification; use it only on a lab cluster.") from None
             raise Failure(f"Could not reach {self.base}: {reason}") from None
-        except json.JSONDecodeError:
+        except socket.timeout:          # TimeoutError from 3.10; a separate class on 3.9
+            raise Failure(f"{self.base} did not answer within {self.timeout} seconds.") from None
+        except OSError as e:
+            raise Failure(f"Connection to {self.base} failed: {e}") from None
+        except (json.JSONDecodeError, UnicodeDecodeError):
             raise Failure(f"{url} did not return JSON. Is --host the AAP platform URL?") from None
 
 
@@ -164,7 +175,7 @@ def find_job(api, args):
 
 # --- artifact -> HTML -------------------------------------------------------------
 
-def extract_html(job):
+def extract_html(job, max_artifact_bytes=MAX_ARTIFACT_BYTES, max_html_bytes=MAX_HTML_BYTES):
     """Return (html_bytes, filename) from a job detail or a bare artifacts dict."""
     artifacts = job.get("artifacts", job) if isinstance(job, dict) else None
     ident = f"job {job.get('id')}" if isinstance(job, dict) and "id" in job else "these artifacts"
@@ -182,8 +193,8 @@ def extract_html(job):
     if art is None:
         if "readiness_report" in artifacts:
             raise Failure(f"{ident} published the structured readiness_report but no dashboard. "
-                          "It ran an older version of the role: sync the project and relaunch the "
-                          "workflow. --json saves the structured report from this job meanwhile.")
+                          "It ran an older version of the role: sync the project and relaunch the workflow.\n"
+                          "--json saves the structured report from this job meanwhile.")
         if job.get("name") and job.get("name") != REPORT_TEMPLATE:
             raise Failure(f"{ident} is '{job.get('name')}', not '{REPORT_TEMPLATE}'. "
                           "Use the report job's ID, or --workflow with the workflow job ID.")
@@ -196,15 +207,18 @@ def extract_html(job):
                       "--json saves the structured report instead.")
     if art.get("encoding") != "gzip+base64" or not isinstance(art.get("content"), str):
         raise Failure(f"{ARTIFACT} in {ident} has unsupported encoding {art.get('encoding')!r}.")
+    if len(art["content"]) > max_artifact_bytes:
+        raise Failure(f"{ARTIFACT} in {ident} is {len(art['content'])} bytes encoded, over the "
+                      f"{max_artifact_bytes}-byte limit; refusing to decode it.")
 
     try:
         compressed = base64.b64decode(art["content"], validate=True)
         with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as gz:
-            html = gz.read(MAX_HTML_BYTES + 1)
+            html = gz.read(max_html_bytes + 1)
     except (binascii.Error, OSError, EOFError) as e:
         raise Failure(f"{ARTIFACT} in {ident} could not be decoded ({e}). It may have been truncated.") from None
-    if len(html) > MAX_HTML_BYTES:
-        raise Failure(f"{ARTIFACT} in {ident} expands past {MAX_HTML_BYTES} bytes; refusing to write it.")
+    if len(html) > max_html_bytes:
+        raise Failure(f"{ARTIFACT} in {ident} expands past {max_html_bytes} bytes; refusing to use it.")
     return html, art.get("filename") or "readiness-report.html"
 
 

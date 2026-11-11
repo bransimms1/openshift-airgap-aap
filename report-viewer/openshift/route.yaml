@@ -1,0 +1,16 @@
+---
+# No host: OpenShift generates report-viewer-readiness-viewer.<apps domain>.
+# install.sh sets one when VIEWER_HOST is given.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: report-viewer
+spec:
+  to:
+    kind: Service
+    name: report-viewer
+  port:
+    targetPort: https
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect

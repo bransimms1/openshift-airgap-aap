@@ -19,6 +19,10 @@
     controller_organization: "Platform Engineering"
     controller_inventory_demo: "demo"
     controller_inventory_prod: "site-a"
+    # Optional: the readiness report viewer's base URL (report-viewer/). When
+    # set, every node receives it as readiness_viewer_url and the report job
+    # prints a link. Empty leaves the workflow's variables as they are.
+    controller_readiness_viewer_url: ""
     validation_branches:
       - "10-validate-dns"
       - "11-validate-ntp"
@@ -45,6 +49,9 @@
         survey_spec: "{{ lookup('file', 'surveys/cluster_readiness.json') | from_json }}"
         ask_variables_on_launch: false
         ask_inventory_on_launch: true
+        extra_vars: >-
+          {{ {'readiness_viewer_url': controller_readiness_viewer_url}
+             if controller_readiness_viewer_url | length > 0 else omit }}
 
     # --- execution, only after a human says so -----------------------------
     - name: Node - boot hosts from virtual media

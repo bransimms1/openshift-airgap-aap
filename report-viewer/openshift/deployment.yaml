@@ -1,0 +1,141 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: report-viewer
+  labels:
+    app: report-viewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: report-viewer
+  template:
+    metadata:
+      labels:
+        app: report-viewer
+    spec:
+      serviceAccountName: report-viewer
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+
+        # Signs users in with OpenShift, admits only the readiness-viewers group
+        # (rbac.yaml), and forwards to the viewer with X-Forwarded-User set.
+        - name: oauth-proxy
+          image: oauth-proxy
+          args:
+            - --provider=openshift
+            - --openshift-service-account=report-viewer
+            - '--openshift-sar={"namespace":"readiness-viewer","resource":"services","resourceName":"report-viewer","verb":"get"}'
+            - --https-address=:8443
+            - --http-address=
+            - --upstream=http://127.0.0.1:8080
+            - --tls-cert=/etc/tls/private/tls.crt
+            - --tls-key=/etc/tls/private/tls.key
+            - --cookie-secret-file=$(SESSION_SECRET_FILE)
+            # Group membership is checked at sign-in, so this bounds how long
+            # a removed user keeps access. Re-authentication is usually silent.
+            - --cookie-expire=2h0m0s
+            - --pass-basic-auth=false
+            - --pass-user-headers=true
+            - --skip-provider-button=true
+          env:
+            - name: SESSION_SECRET_FILE
+              value: /etc/proxy/session/session_secret
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            httpGet:
+              path: /oauth/healthz
+              port: https
+              scheme: HTTPS
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /oauth/healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/tls/private
+              readOnly: true
+            - name: session
+              mountPath: /etc/proxy/session
+              readOnly: true
+
+        # Reachable only through the proxy: it listens on 127.0.0.1, so the
+        # probes run inside the container instead of over the network.
+        - name: viewer
+          image: report-viewer
+          envFrom:
+            - configMapRef:
+                name: report-viewer
+          env:
+            - name: AAP_TOKEN_FILE
+              value: /etc/aap-token/token
+            - name: AAP_CA_FILE
+              value: /etc/aap-ca/ca.crt
+          readinessProbe:
+            exec:
+              command: ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: aap-token
+              mountPath: /etc/aap-token
+              readOnly: true
+            - name: aap-ca
+              mountPath: /etc/aap-ca
+              readOnly: true
+
+      # Secrets as projected volumes. The Secrets themselves are created by
+      # install.sh (session, token) and by the service CA (tls).
+      volumes:
+        - name: tls
+          projected:
+            sources:
+              - secret:
+                  name: report-viewer-tls
+        - name: session
+          projected:
+            sources:
+              - secret:
+                  name: report-viewer-proxy
+        - name: aap-token
+          projected:
+            sources:
+              - secret:
+                  name: report-viewer-aap-token
+        # Optional: only needed when AAP's route is signed by a private CA.
+        - name: aap-ca
+          configMap:
+            name: report-viewer-aap-ca
+            optional: true

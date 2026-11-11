@@ -21,3 +21,9 @@ report_fail_when_not_ready: true
 # Controller passes to ansible-runner (MAX_EVENT_RES), and artifacts are handed
 # to every later workflow node as extra variables.
 report_html_artifact_max_bytes: 262144
+
+# Base URL of the readiness report viewer (report-viewer/), for example
+# https://report-viewer-readiness-viewer.apps.example.com. When set, the job
+# output links to <url>/report/<job id>. Leave empty if the viewer is not
+# deployed; the workflow does not depend on it.
+readiness_viewer_url: ""

@@ -1,0 +1,30 @@
+---
+# Readiness report viewer. Apply with report-viewer/install.sh, which fills in
+# the two images and AAP_URL. To review what it would apply:
+#   AAP_URL=https://aap.apps.example.com report-viewer/install.sh --render
+#
+# Secrets are not here. install.sh creates them; see docs/DEMO-SETUP.md §6.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: readiness-viewer
+
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - rbac.yaml
+  - service.yaml
+  - route.yaml
+  - deployment.yaml
+
+# The images are placeholders, "report-viewer" and "oauth-proxy". install.sh
+# replaces them; if you apply by hand, add an images: list with your
+# references, or the pods will not start.
+
+configMapGenerator:
+  - name: report-viewer
+    literals:
+      - AAP_URL=
+      - AAP_API_PREFIX=/api/controller/v2
+      - AAP_TIMEOUT=10
+      - REPORT_TEMPLATE=20-readiness-report
+      - REPORT_ORGANIZATION=
